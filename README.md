@@ -164,8 +164,13 @@ src/
 │   └── render.rs               # rasterize annotations onto image (tiny-skia + imageproc)
 ├── ui/
 │   ├── mod.rs                  # UiRequest / UiResult channel types
-│   ├── overlay.rs              # eframe overlay app, region select + tool dispatch
-│   └── toolbar.rs              # bottom toolbar widget
+│   ├── toolbar.rs              # bottom toolbar widget
+│   └── overlay/
+│       ├── mod.rs              # OverlayApp + eframe update loop + input dispatch
+│       ├── selection.rs        # handles + hit-testing + resize math
+│       ├── draft.rs            # in-progress Annotation (Draft enum)
+│       ├── preview.rs          # egui-painter preview rendering
+│       └── convert.rs          # tiny egui ↔ canvas type conversions
 └── export/
     ├── mod.rs
     ├── file.rs                 # PNG save (creates parent dirs)
