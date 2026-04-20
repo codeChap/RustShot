@@ -5,7 +5,7 @@ Fast Rust screenshot tool for Linux + X11 (i3-friendly). A from-scratch port of 
 ## Status
 
 - **Linux + X11 only.** Developed and tested on i3wm. No Wayland, no Windows, no macOS.
-- ~12 MB stripped release binary, no system runtime deps beyond X11 itself.
+- ~11 MB stripped release binary. Runtime deps: X11, and `xclip` (for the clipboard — `apt install xclip`).
 
 ## Features
 
@@ -169,7 +169,7 @@ src/
 └── export/
     ├── mod.rs
     ├── file.rs                 # PNG save (creates parent dirs)
-    └── clipboard.rs            # arboard
+    └── clipboard.rs            # shells out to xclip for persistent ownership
 ```
 
 The X11/winit thread constraint (winit owns the main thread on Linux X11) drives the daemon's structure: the main thread runs `eframe::run_native` per overlay invocation, while the DBus listener runs on a background tokio thread and forwards capture requests over a `crossbeam_channel`.
