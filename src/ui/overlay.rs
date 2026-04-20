@@ -50,13 +50,6 @@ pub fn show(
     lock.clone()
 }
 
-#[derive(Default, PartialEq, Eq)]
-enum Mode {
-    #[default]
-    SelectingRegion,
-    Annotating,
-}
-
 #[derive(Debug, Clone)]
 enum Draft {
     Pencil { points: Vec<Pos>, style: Style },
@@ -196,7 +189,6 @@ struct OverlayApp {
     counter_radius: f32,
     blur_sigma: f32,
     texture: Option<egui::TextureHandle>,
-    mode: Mode,
     selection: Option<egui::Rect>,
     sel_drag_start: Option<egui::Pos2>,
     selection_edit: SelectionEdit,
@@ -239,7 +231,6 @@ impl OverlayApp {
             counter_radius,
             blur_sigma,
             texture: None,
-            mode: Mode::default(),
             selection: None,
             sel_drag_start: None,
             selection_edit: SelectionEdit::None,
@@ -355,43 +346,41 @@ impl eframe::App for OverlayApp {
             self.canvas.redo();
         }
 
-        if self.mode == Mode::Annotating {
-            if enter {
-                let r = self.act_save();
-                self.finish(r, ctx);
-                return;
-            }
-            if ctrl_c {
-                let r = self.act_copy();
-                self.finish(r, ctx);
-                return;
-            }
-            if n1 { self.canvas.tool = ToolKind::Pencil; }
-            if n2 { self.canvas.tool = ToolKind::Arrow; }
-            if n3 { self.canvas.tool = ToolKind::Rect; }
-            if n4 { self.canvas.tool = ToolKind::Ellipse; }
-            if n5 { self.canvas.tool = ToolKind::Blur; }
-            if n6 { self.canvas.tool = ToolKind::Counter; }
+        if enter {
+            let r = self.act_save();
+            self.finish(r, ctx);
+            return;
+        }
+        if ctrl_c {
+            let r = self.act_copy();
+            self.finish(r, ctx);
+            return;
+        }
+        if n1 { self.canvas.tool = ToolKind::Pencil; }
+        if n2 { self.canvas.tool = ToolKind::Arrow; }
+        if n3 { self.canvas.tool = ToolKind::Rect; }
+        if n4 { self.canvas.tool = ToolKind::Ellipse; }
+        if n5 { self.canvas.tool = ToolKind::Blur; }
+        if n6 { self.canvas.tool = ToolKind::Counter; }
 
-            if let Some(action) = toolbar::show(ctx, &mut self.canvas, &self.palette) {
-                match action {
-                    toolbar::Action::Save => {
-                        let r = self.act_save();
-                        self.finish(r, ctx);
-                        return;
-                    }
-                    toolbar::Action::Copy => {
-                        let r = self.act_copy();
-                        self.finish(r, ctx);
-                        return;
-                    }
-                    toolbar::Action::Cancel => {
-                        self.finish(UiResult::Cancelled, ctx);
-                        return;
-                    }
-                    toolbar::Action::Undo => self.canvas.undo(),
-                    toolbar::Action::Redo => self.canvas.redo(),
+        if let Some(action) = toolbar::show(ctx, &mut self.canvas, &self.palette) {
+            match action {
+                toolbar::Action::Save => {
+                    let r = self.act_save();
+                    self.finish(r, ctx);
+                    return;
                 }
+                toolbar::Action::Copy => {
+                    let r = self.act_copy();
+                    self.finish(r, ctx);
+                    return;
+                }
+                toolbar::Action::Cancel => {
+                    self.finish(UiResult::Cancelled, ctx);
+                    return;
+                }
+                toolbar::Action::Undo => self.canvas.undo(),
+                toolbar::Action::Redo => self.canvas.redo(),
             }
         }
 
@@ -405,9 +394,10 @@ impl eframe::App for OverlayApp {
                     egui::Sense::click_and_drag(),
                 );
 
-                match self.mode {
-                    Mode::SelectingRegion => handle_region_drag(self, &response),
-                    Mode::Annotating => handle_tool_input(self, &response, ctx),
+                if self.selection.is_none() {
+                    handle_region_drag(self, &response);
+                } else {
+                    handle_tool_input(self, &response, ctx);
                 }
 
                 let painter = ui.painter();
@@ -426,15 +416,13 @@ impl eframe::App for OverlayApp {
                         0.0,
                         egui::Stroke::new(2.0, egui::Color32::from_rgb(255, 200, 0)),
                     );
-                    if self.mode == Mode::Annotating {
-                        draw_handles(painter, sel);
-                    }
+                    draw_handles(painter, sel);
                 } else {
                     painter.rect_filled(screen_rect, 0.0, dim);
                     painter.text(
                         screen_rect.center(),
                         egui::Align2::CENTER_CENTER,
-                        "drag to select  -  Esc to cancel",
+                        "drag to select a region  -  Enter saves full screen  -  Esc cancels",
                         egui::FontId::proportional(18.0),
                         egui::Color32::from_white_alpha(220),
                     );
@@ -469,9 +457,7 @@ fn handle_region_drag(app: &mut OverlayApp, response: &egui::Response) {
     }
     if response.drag_stopped() {
         if let Some(sel) = app.selection {
-            if sel.width() >= 4.0 && sel.height() >= 4.0 {
-                app.mode = Mode::Annotating;
-            } else {
+            if sel.width() < 4.0 || sel.height() < 4.0 {
                 app.selection = None;
             }
         }
