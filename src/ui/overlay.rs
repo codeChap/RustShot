@@ -98,11 +98,36 @@ fn handle_positions(rect: egui::Rect) -> [(Handle, egui::Pos2); 8] {
 }
 
 fn handle_at(rect: egui::Rect, pos: egui::Pos2) -> Option<Handle> {
-    const HIT: f32 = 12.0;
-    for (h, p) in handle_positions(rect) {
-        if (pos - p).length() < HIT {
+    // Corners first — a generous square hit-zone around each.
+    const CORNER_HIT: f32 = 14.0; // half-size → 28px square
+    let corners = [
+        (Handle::NW, egui::pos2(rect.left(), rect.top())),
+        (Handle::NE, egui::pos2(rect.right(), rect.top())),
+        (Handle::SW, egui::pos2(rect.left(), rect.bottom())),
+        (Handle::SE, egui::pos2(rect.right(), rect.bottom())),
+    ];
+    for (h, p) in corners {
+        let hit = egui::Rect::from_center_size(p, egui::vec2(CORNER_HIT * 2.0, CORNER_HIT * 2.0));
+        if hit.contains(pos) {
             return Some(h);
         }
+    }
+
+    // Edges — anywhere along an edge line (not just the midpoint dot).
+    const EDGE_HIT: f32 = 8.0;
+    let in_x = pos.x >= rect.left() - EDGE_HIT && pos.x <= rect.right() + EDGE_HIT;
+    let in_y = pos.y >= rect.top() - EDGE_HIT && pos.y <= rect.bottom() + EDGE_HIT;
+    if (pos.y - rect.top()).abs() <= EDGE_HIT && in_x {
+        return Some(Handle::N);
+    }
+    if (pos.y - rect.bottom()).abs() <= EDGE_HIT && in_x {
+        return Some(Handle::S);
+    }
+    if (pos.x - rect.left()).abs() <= EDGE_HIT && in_y {
+        return Some(Handle::W);
+    }
+    if (pos.x - rect.right()).abs() <= EDGE_HIT && in_y {
+        return Some(Handle::E);
     }
     None
 }
@@ -127,9 +152,9 @@ fn resize_rect(rect: egui::Rect, handle: Handle, delta: egui::Vec2) -> egui::Rec
 
 fn draw_handles(painter: &egui::Painter, sel: egui::Rect) {
     for (_, p) in handle_positions(sel) {
-        let r = egui::Rect::from_center_size(p, egui::vec2(8.0, 8.0));
-        painter.rect_filled(r, 1.0, egui::Color32::WHITE);
-        painter.rect_stroke(r, 1.0, egui::Stroke::new(1.0, egui::Color32::from_rgb(255, 200, 0)));
+        let r = egui::Rect::from_center_size(p, egui::vec2(10.0, 10.0));
+        painter.rect_filled(r, 2.0, egui::Color32::WHITE);
+        painter.rect_stroke(r, 2.0, egui::Stroke::new(1.5, egui::Color32::from_rgb(255, 200, 0)));
     }
 }
 
