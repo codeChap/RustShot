@@ -118,7 +118,7 @@ impl X11Capture {
             .conn
             .get_image(ImageFormat::Z_PIXMAP, self.root, x, y, w, h, !0u32)?
             .reply()?;
-        bgrx_to_rgba(&reply.data, w as u32, h as u32)
+        bgrx_to_rgba(reply.data, w as u32, h as u32)
     }
 
     /// XFixes cursor image is ARGB premultiplied (one u32 per pixel).
@@ -165,8 +165,9 @@ impl X11Capture {
 }
 
 /// X11 Z_PIXMAP on a 24-bit TrueColor visual returns BGRX bytes (4 per pixel).
-/// Convert to RGBA. Assumes little-endian server (standard on x86_64).
-fn bgrx_to_rgba(data: &[u8], w: u32, h: u32) -> Result<RgbaImage> {
+/// Convert to RGBA in place — saves the second alloc and a memcpy on every capture.
+/// Assumes little-endian server (standard on x86_64).
+fn bgrx_to_rgba(mut data: Vec<u8>, w: u32, h: u32) -> Result<RgbaImage> {
     let pixel_count = (w as usize)
         .checked_mul(h as usize)
         .ok_or_else(|| Error::Other("image dimensions overflow".into()))?;
@@ -177,10 +178,11 @@ fn bgrx_to_rgba(data: &[u8], w: u32, h: u32) -> Result<RgbaImage> {
             data.len()
         )));
     }
-    let mut out = Vec::with_capacity(needed);
-    for chunk in data.chunks_exact(4).take(pixel_count) {
-        out.extend_from_slice(&[chunk[2], chunk[1], chunk[0], 0xff]);
+    data.truncate(needed);
+    for chunk in data.chunks_exact_mut(4) {
+        chunk.swap(0, 2); // BGRX → RGBX
+        chunk[3] = 0xff;  // force opaque alpha (X11's "X" is undefined)
     }
-    RgbaImage::from_raw(w, h, out)
+    RgbaImage::from_raw(w, h, data)
         .ok_or_else(|| Error::Other("failed to construct RgbaImage".into()))
 }

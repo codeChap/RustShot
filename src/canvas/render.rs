@@ -7,6 +7,13 @@ use tiny_skia::{
 
 const FONT_BYTES: &[u8] = include_bytes!("../../assets/font.ttf");
 
+fn font() -> &'static FontRef<'static> {
+    static FONT: std::sync::OnceLock<FontRef<'static>> = std::sync::OnceLock::new();
+    FONT.get_or_init(|| {
+        FontRef::try_from_slice(FONT_BYTES).expect("embedded font is valid TTF")
+    })
+}
+
 pub fn rasterize(img: &mut RgbaImage, annotations: &[Annotation]) {
     if annotations.is_empty() {
         return;
@@ -54,16 +61,10 @@ pub fn rasterize(img: &mut RgbaImage, annotations: &[Annotation]) {
     }
 
     // 3. Counter numbers via imageproc::draw_text_mut.
-    let font = match FontRef::try_from_slice(FONT_BYTES) {
-        Ok(f) => f,
-        Err(e) => {
-            tracing::warn!("font load failed: {e}");
-            return;
-        }
-    };
+    let font = font();
     for a in annotations {
         if let Annotation::Counter { center, number, color, radius } = a {
-            draw_counter_text(img, *center, *number, *color, *radius, &font);
+            draw_counter_text(img, *center, *number, *color, *radius, font);
         }
     }
 }

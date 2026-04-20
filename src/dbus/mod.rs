@@ -18,20 +18,11 @@ pub struct Service {
 
 #[interface(name = "org.rustshot.RustShot")]
 impl Service {
-    /// Flameshot-compatible: interactive region-select then save.
-    /// Empty `path` triggers auto-save to the configured `save_dir`/`filename_pattern`.
+    /// Flameshot-CLI-compat: interactive region capture.
+    /// Equivalent to `graphicCaptureFlags` with clipboard=false, no_save=false.
     #[zbus(name = "graphicCapture")]
-    async fn graphic_capture(
-        &self,
-        path: String,
-        delay: u32,
-        _id: String,
-    ) -> zbus::fdo::Result<()> {
-        if delay > 0 {
-            tokio::time::sleep(std::time::Duration::from_millis(delay as u64)).await;
-        }
-        let resolved = resolve_save_path(path, false, &self.config);
-        gui_capture(self.capture.clone(), self.config.clone(), self.ui_tx.clone(), resolved, false).await
+    async fn graphic_capture(&self, path: String, delay: u32, id: String) -> zbus::fdo::Result<()> {
+        self.graphic_capture_flags(path, delay, false, false, id).await
     }
 
     /// Extended: graphicCapture + clipboard + no_save flags.
@@ -44,22 +35,21 @@ impl Service {
         no_save: bool,
         _id: String,
     ) -> zbus::fdo::Result<()> {
-        if delay > 0 {
-            tokio::time::sleep(std::time::Duration::from_millis(delay as u64)).await;
-        }
         let resolved = resolve_save_path(path, no_save, &self.config);
-        gui_capture(self.capture.clone(), self.config.clone(), self.ui_tx.clone(), resolved, clipboard).await
+        gui_capture(
+            self.capture.clone(),
+            self.config.clone(),
+            self.ui_tx.clone(),
+            resolved,
+            clipboard,
+            delay,
+        )
+        .await
     }
 
     #[zbus(name = "fullScreen")]
-    async fn full_screen(
-        &self,
-        path: String,
-        delay: u32,
-        _id: String,
-    ) -> zbus::fdo::Result<()> {
-        let resolved = resolve_save_path(path, false, &self.config);
-        do_capture(self.capture.clone(), self.config.clone(), CaptureKind::All, resolved, delay, false).await
+    async fn full_screen(&self, path: String, delay: u32, id: String) -> zbus::fdo::Result<()> {
+        self.full_screen_flags(path, delay, false, false, id).await
     }
 
     #[zbus(name = "fullScreenFlags")]
@@ -72,7 +62,15 @@ impl Service {
         _id: String,
     ) -> zbus::fdo::Result<()> {
         let resolved = resolve_save_path(path, no_save, &self.config);
-        do_capture(self.capture.clone(), self.config.clone(), CaptureKind::All, resolved, delay, clipboard).await
+        do_capture(
+            self.capture.clone(),
+            self.config.clone(),
+            CaptureKind::All,
+            resolved,
+            delay,
+            clipboard,
+        )
+        .await
     }
 
     #[zbus(name = "captureScreen")]
@@ -81,10 +79,9 @@ impl Service {
         screen_number: i32,
         path: String,
         delay: u32,
-        _id: String,
+        id: String,
     ) -> zbus::fdo::Result<()> {
-        let resolved = resolve_save_path(path, false, &self.config);
-        do_capture(self.capture.clone(), self.config.clone(), kind_for_screen(screen_number), resolved, delay, false).await
+        self.capture_screen_flags(screen_number, path, delay, false, false, id).await
     }
 
     #[zbus(name = "captureScreenFlags")]
@@ -98,8 +95,35 @@ impl Service {
         _id: String,
     ) -> zbus::fdo::Result<()> {
         let resolved = resolve_save_path(path, no_save, &self.config);
-        do_capture(self.capture.clone(), self.config.clone(), kind_for_screen(screen_number), resolved, delay, clipboard).await
+        do_capture(
+            self.capture.clone(),
+            self.config.clone(),
+            kind_for_screen(screen_number),
+            resolved,
+            delay,
+            clipboard,
+        )
+        .await
     }
+}
+
+async fn sleep_delay(delay_ms: u32) {
+    if delay_ms > 0 {
+        tokio::time::sleep(std::time::Duration::from_millis(delay_ms as u64)).await;
+    }
+}
+
+/// Run blocking work on the tokio blocking pool, mapping both the join error
+/// and the inner `anyhow::Result` into a `zbus::fdo::Result`.
+async fn run_blocking<F, T>(f: F) -> zbus::fdo::Result<T>
+where
+    F: FnOnce() -> anyhow::Result<T> + Send + 'static,
+    T: Send + 'static,
+{
+    tokio::task::spawn_blocking(f)
+        .await
+        .map_err(|e| zbus::fdo::Error::Failed(format!("join: {e}")))?
+        .map_err(|e| zbus::fdo::Error::Failed(format!("{e}")))
 }
 
 fn kind_for_screen(n: i32) -> CaptureKind {
@@ -129,17 +153,17 @@ async fn gui_capture(
     ui_tx: Sender<UiRequest>,
     path: String,
     clipboard: bool,
+    delay: u32,
 ) -> zbus::fdo::Result<()> {
+    sleep_delay(delay).await;
     let include_cursor = config.capture.include_cursor;
     let cap = capture.clone();
-    let (image, screen_origin) = tokio::task::spawn_blocking(move || -> anyhow::Result<_> {
+    let (image, screen_origin) = run_blocking(move || -> anyhow::Result<_> {
         let screen = cap.cursor_screen()?;
         let img = cap.capture_screen_with_cursor(&screen, include_cursor)?;
         Ok((img, (screen.x, screen.y)))
     })
-    .await
-    .map_err(|e| zbus::fdo::Error::Failed(format!("join: {e}")))?
-    .map_err(|e| zbus::fdo::Error::Failed(format!("capture: {e}")))?;
+    .await?;
 
     let (resp_tx, resp_rx) = tokio::sync::oneshot::channel();
     ui_tx
@@ -177,11 +201,9 @@ async fn do_capture(
     delay: u32,
     clipboard: bool,
 ) -> zbus::fdo::Result<()> {
-    if delay > 0 {
-        tokio::time::sleep(std::time::Duration::from_millis(delay as u64)).await;
-    }
+    sleep_delay(delay).await;
     let include_cursor = config.capture.include_cursor;
-    tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
+    run_blocking(move || -> anyhow::Result<()> {
         let img = match kind {
             CaptureKind::CursorScreen => {
                 let screen = capture.cursor_screen()?;
@@ -213,7 +235,4 @@ async fn do_capture(
         Ok(())
     })
     .await
-    .map_err(|e| zbus::fdo::Error::Failed(format!("join: {e}")))?
-    .map_err(|e| zbus::fdo::Error::Failed(format!("{e}")))?;
-    Ok(())
 }

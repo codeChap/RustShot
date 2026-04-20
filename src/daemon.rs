@@ -15,7 +15,7 @@ pub fn run() -> Result<()> {
     std::thread::Builder::new()
         .name("rustshot-dbus".into())
         .spawn(move || {
-            let rt = match tokio::runtime::Builder::new_multi_thread()
+            let rt = match tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
             {

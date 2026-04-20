@@ -363,7 +363,11 @@ impl eframe::App for OverlayApp {
                 }
             });
 
-        ctx.request_repaint();
+        // Continuous repaint only while live preview is changing.
+        // egui auto-repaints on input events otherwise.
+        if self.draft.is_some() || self.sel_drag_start.is_some() {
+            ctx.request_repaint();
+        }
     }
 }
 
@@ -523,8 +527,23 @@ fn draw_annotation(painter: &egui::Painter, a: &Annotation) {
 }
 
 fn draw_draft(painter: &egui::Painter, draft: &Draft) {
-    if let Some(annotation) = draft.clone().finalize() {
-        draw_annotation(painter, &annotation);
+    match draft {
+        // Pencil's points get cloned by finalize(); draw directly to skip the per-frame Vec clone.
+        Draft::Pencil { points, style } => {
+            if points.len() < 2 {
+                return;
+            }
+            let stroke = egui::Stroke::new(style.width, color_to_egui(style.color));
+            for w2 in points.windows(2) {
+                painter.line_segment([egui_from(w2[0]), egui_from(w2[1])], stroke);
+            }
+        }
+        // Other drafts have no Vec; finalize+draw is a tiny enum copy.
+        other => {
+            if let Some(annotation) = other.clone().finalize() {
+                draw_annotation(painter, &annotation);
+            }
+        }
     }
 }
 
