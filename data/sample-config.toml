@@ -1,0 +1,26 @@
+# RustShot config — copy to ~/.config/rustshot/config.toml and tweak.
+# All sections + keys are optional; missing values fall back to defaults.
+
+[defaults]
+color = "#ff3232"             # default annotation color (#rrggbb or #rrggbbaa)
+width = 4.0                   # default stroke width
+counter_radius = 16.0         # auto-counter bubble radius
+blur_sigma = 12.0             # blur strength
+initial_tool = "rect"         # one of: pencil, arrow, rect, ellipse, blur, counter
+save_dir = "~/Pictures/screenshots"      # used when no -p flag is given
+filename_pattern = "%Y%m%d-%H%M%S.png"   # strftime format for auto-generated filenames
+
+[capture]
+include_cursor = false   # composite the X11 cursor into screenshots (XFixes)
+
+[palette]
+colors = [
+  "#ff3232",
+  "#ffc800",
+  "#50c850",
+  "#32b4dc",
+  "#4664dc",
+  "#c850c8",
+  "#ffffff",
+  "#000000",
+]
