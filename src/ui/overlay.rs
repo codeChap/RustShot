@@ -66,6 +66,71 @@ enum Draft {
     Blur { start: Pos, end: Pos, sigma: f32 },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Handle { N, S, E, W, NE, NW, SE, SW }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SelectionEdit {
+    None,
+    Moving,
+    Resizing(Handle),
+}
+
+fn handle_positions(rect: egui::Rect) -> [(Handle, egui::Pos2); 8] {
+    let cx = rect.center().x;
+    let cy = rect.center().y;
+    let l = rect.left();
+    let r = rect.right();
+    let t = rect.top();
+    let b = rect.bottom();
+    [
+        (Handle::NW, egui::pos2(l, t)),
+        (Handle::N,  egui::pos2(cx, t)),
+        (Handle::NE, egui::pos2(r, t)),
+        (Handle::E,  egui::pos2(r, cy)),
+        (Handle::SE, egui::pos2(r, b)),
+        (Handle::S,  egui::pos2(cx, b)),
+        (Handle::SW, egui::pos2(l, b)),
+        (Handle::W,  egui::pos2(l, cy)),
+    ]
+}
+
+fn handle_at(rect: egui::Rect, pos: egui::Pos2) -> Option<Handle> {
+    const HIT: f32 = 12.0;
+    for (h, p) in handle_positions(rect) {
+        if (pos - p).length() < HIT {
+            return Some(h);
+        }
+    }
+    None
+}
+
+fn resize_rect(rect: egui::Rect, handle: Handle, delta: egui::Vec2) -> egui::Rect {
+    let mut min = rect.min;
+    let mut max = rect.max;
+    match handle {
+        Handle::N  => min.y += delta.y,
+        Handle::S  => max.y += delta.y,
+        Handle::E  => max.x += delta.x,
+        Handle::W  => min.x += delta.x,
+        Handle::NE => { min.y += delta.y; max.x += delta.x; }
+        Handle::NW => { min.y += delta.y; min.x += delta.x; }
+        Handle::SE => { max.x += delta.x; max.y += delta.y; }
+        Handle::SW => { min.x += delta.x; max.y += delta.y; }
+    }
+    if min.x > max.x { std::mem::swap(&mut min.x, &mut max.x); }
+    if min.y > max.y { std::mem::swap(&mut min.y, &mut max.y); }
+    egui::Rect::from_min_max(min, max)
+}
+
+fn draw_handles(painter: &egui::Painter, sel: egui::Rect) {
+    for (_, p) in handle_positions(sel) {
+        let r = egui::Rect::from_center_size(p, egui::vec2(8.0, 8.0));
+        painter.rect_filled(r, 1.0, egui::Color32::WHITE);
+        painter.rect_stroke(r, 1.0, egui::Stroke::new(1.0, egui::Color32::from_rgb(255, 200, 0)));
+    }
+}
+
 impl Draft {
     fn finalize(self) -> Option<Annotation> {
         match self {
@@ -134,6 +199,9 @@ struct OverlayApp {
     mode: Mode,
     selection: Option<egui::Rect>,
     sel_drag_start: Option<egui::Pos2>,
+    selection_edit: SelectionEdit,
+    edit_drag_start: Option<egui::Pos2>,
+    edit_rect_start: Option<egui::Rect>,
     draft: Option<Draft>,
     canvas: Canvas,
     result: Arc<Mutex<UiResult>>,
@@ -174,6 +242,9 @@ impl OverlayApp {
             mode: Mode::default(),
             selection: None,
             sel_drag_start: None,
+            selection_edit: SelectionEdit::None,
+            edit_drag_start: None,
+            edit_rect_start: None,
             draft: None,
             canvas,
             result,
@@ -336,7 +407,7 @@ impl eframe::App for OverlayApp {
 
                 match self.mode {
                     Mode::SelectingRegion => handle_region_drag(self, &response),
-                    Mode::Annotating => handle_tool_input(self, &response),
+                    Mode::Annotating => handle_tool_input(self, &response, ctx),
                 }
 
                 let painter = ui.painter();
@@ -355,6 +426,9 @@ impl eframe::App for OverlayApp {
                         0.0,
                         egui::Stroke::new(2.0, egui::Color32::from_rgb(255, 200, 0)),
                     );
+                    if self.mode == Mode::Annotating {
+                        draw_handles(painter, sel);
+                    }
                 } else {
                     painter.rect_filled(screen_rect, 0.0, dim);
                     painter.text(
@@ -374,7 +448,10 @@ impl eframe::App for OverlayApp {
 
         // Continuous repaint only while live preview is changing.
         // egui auto-repaints on input events otherwise.
-        if self.draft.is_some() || self.sel_drag_start.is_some() {
+        if self.draft.is_some()
+            || self.sel_drag_start.is_some()
+            || self.selection_edit != SelectionEdit::None
+        {
             ctx.request_repaint();
         }
     }
@@ -401,66 +478,116 @@ fn handle_region_drag(app: &mut OverlayApp, response: &egui::Response) {
     }
 }
 
-fn handle_tool_input(app: &mut OverlayApp, response: &egui::Response) {
+fn handle_tool_input(app: &mut OverlayApp, response: &egui::Response, ctx: &egui::Context) {
     let style = app.canvas.style;
     let tool = app.canvas.tool;
     let blur_sigma = app.blur_sigma;
     let counter_radius = app.counter_radius;
+    let pointer = response.interact_pointer_pos();
 
     if response.drag_started() {
-        if let Some(p) = response.interact_pointer_pos() {
-            app.draft = match tool {
-                ToolKind::Pencil => Some(Draft::Pencil {
-                    points: vec![pos_from(p)],
-                    style,
-                }),
-                ToolKind::Arrow => Some(Draft::Arrow {
-                    start: pos_from(p),
-                    end: pos_from(p),
-                    style,
-                }),
-                ToolKind::Rect => Some(Draft::Rect {
-                    start: pos_from(p),
-                    end: pos_from(p),
-                    style,
-                }),
-                ToolKind::Ellipse => Some(Draft::Ellipse {
-                    start: pos_from(p),
-                    end: pos_from(p),
-                    style,
-                }),
-                ToolKind::Blur => Some(Draft::Blur {
-                    start: pos_from(p),
-                    end: pos_from(p),
-                    sigma: blur_sigma,
-                }),
-                ToolKind::Counter => None,
-            };
+        // Decide: are we editing the selection (handle-drag or Ctrl-move), or drafting an annotation?
+        app.selection_edit = SelectionEdit::None;
+        if let (Some(sel), Some(p)) = (app.selection, pointer) {
+            if let Some(h) = handle_at(sel, p) {
+                app.selection_edit = SelectionEdit::Resizing(h);
+                app.edit_drag_start = Some(p);
+                app.edit_rect_start = Some(sel);
+            } else if ctx.input(|i| i.modifiers.ctrl) && sel.contains(p) {
+                app.selection_edit = SelectionEdit::Moving;
+                app.edit_drag_start = Some(p);
+                app.edit_rect_start = Some(sel);
+            }
+        }
+
+        if app.selection_edit == SelectionEdit::None {
+            if let Some(p) = pointer {
+                app.draft = match tool {
+                    ToolKind::Pencil => Some(Draft::Pencil {
+                        points: vec![pos_from(p)],
+                        style,
+                    }),
+                    ToolKind::Arrow => Some(Draft::Arrow {
+                        start: pos_from(p),
+                        end: pos_from(p),
+                        style,
+                    }),
+                    ToolKind::Rect => Some(Draft::Rect {
+                        start: pos_from(p),
+                        end: pos_from(p),
+                        style,
+                    }),
+                    ToolKind::Ellipse => Some(Draft::Ellipse {
+                        start: pos_from(p),
+                        end: pos_from(p),
+                        style,
+                    }),
+                    ToolKind::Blur => Some(Draft::Blur {
+                        start: pos_from(p),
+                        end: pos_from(p),
+                        sigma: blur_sigma,
+                    }),
+                    ToolKind::Counter => None,
+                };
+            }
         }
     }
+
     if response.dragged() {
-        if let Some(p) = response.interact_pointer_pos() {
-            if let Some(d) = &mut app.draft {
-                match d {
-                    Draft::Pencil { points, .. } => points.push(pos_from(p)),
-                    Draft::Arrow { end, .. }
-                    | Draft::Rect { end, .. }
-                    | Draft::Ellipse { end, .. }
-                    | Draft::Blur { end, .. } => *end = pos_from(p),
+        match app.selection_edit {
+            SelectionEdit::Resizing(h) => {
+                if let (Some(p), Some(start), Some(rect)) =
+                    (pointer, app.edit_drag_start, app.edit_rect_start)
+                {
+                    app.selection = Some(resize_rect(rect, h, p - start));
+                }
+            }
+            SelectionEdit::Moving => {
+                if let (Some(p), Some(start), Some(rect)) =
+                    (pointer, app.edit_drag_start, app.edit_rect_start)
+                {
+                    app.selection = Some(rect.translate(p - start));
+                }
+            }
+            SelectionEdit::None => {
+                if let Some(p) = pointer {
+                    if let Some(d) = &mut app.draft {
+                        match d {
+                            Draft::Pencil { points, .. } => points.push(pos_from(p)),
+                            Draft::Arrow { end, .. }
+                            | Draft::Rect { end, .. }
+                            | Draft::Ellipse { end, .. }
+                            | Draft::Blur { end, .. } => *end = pos_from(p),
+                        }
+                    }
                 }
             }
         }
     }
+
     if response.drag_stopped() {
-        if let Some(d) = app.draft.take() {
-            if let Some(a) = d.finalize() {
-                app.canvas.push(a);
+        match app.selection_edit {
+            SelectionEdit::None => {
+                if let Some(d) = app.draft.take() {
+                    if let Some(a) = d.finalize() {
+                        app.canvas.push(a);
+                    }
+                }
+            }
+            _ => {
+                app.selection_edit = SelectionEdit::None;
+                app.edit_drag_start = None;
+                app.edit_rect_start = None;
             }
         }
     }
 
-    if tool == ToolKind::Counter && response.clicked() {
-        if let Some(p) = response.interact_pointer_pos() {
+    // Counter is click-only; don't fire while editing the selection.
+    if app.selection_edit == SelectionEdit::None
+        && tool == ToolKind::Counter
+        && response.clicked()
+    {
+        if let Some(p) = pointer {
             let n = app.canvas.next_counter();
             app.canvas.push(Annotation::Counter {
                 center: pos_from(p),
