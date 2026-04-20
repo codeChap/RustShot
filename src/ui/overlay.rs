@@ -50,6 +50,15 @@ pub fn show(
     lock.clone()
 }
 
+/// What a drag is currently doing. Set at drag_started and held until drag_stopped
+/// so the handler doesn't swap mid-drag when `selection` flips from None to Some.
+#[derive(Default, PartialEq, Eq)]
+enum Mode {
+    #[default]
+    SelectingRegion,
+    Annotating,
+}
+
 #[derive(Debug, Clone)]
 enum Draft {
     Pencil { points: Vec<Pos>, style: Style },
@@ -189,6 +198,7 @@ struct OverlayApp {
     counter_radius: f32,
     blur_sigma: f32,
     texture: Option<egui::TextureHandle>,
+    mode: Mode,
     selection: Option<egui::Rect>,
     sel_drag_start: Option<egui::Pos2>,
     selection_edit: SelectionEdit,
@@ -231,6 +241,7 @@ impl OverlayApp {
             counter_radius,
             blur_sigma,
             texture: None,
+            mode: Mode::default(),
             selection: None,
             sel_drag_start: None,
             selection_edit: SelectionEdit::None,
@@ -394,10 +405,9 @@ impl eframe::App for OverlayApp {
                     egui::Sense::click_and_drag(),
                 );
 
-                if self.selection.is_none() {
-                    handle_region_drag(self, &response);
-                } else {
-                    handle_tool_input(self, &response, ctx);
+                match self.mode {
+                    Mode::SelectingRegion => handle_region_drag(self, &response),
+                    Mode::Annotating => handle_tool_input(self, &response, ctx),
                 }
 
                 let painter = ui.painter();
@@ -457,7 +467,9 @@ fn handle_region_drag(app: &mut OverlayApp, response: &egui::Response) {
     }
     if response.drag_stopped() {
         if let Some(sel) = app.selection {
-            if sel.width() < 4.0 || sel.height() < 4.0 {
+            if sel.width() >= 4.0 && sel.height() >= 4.0 {
+                app.mode = Mode::Annotating;
+            } else {
                 app.selection = None;
             }
         }
