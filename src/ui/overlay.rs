@@ -226,6 +226,15 @@ impl OverlayApp {
 
     fn act_copy(&mut self) -> UiResult {
         let img = self.compose();
+        // Always save when copying so a file exists alongside the clipboard
+        // — needed for tools that paste-by-path (Claude Code, etc.).
+        // Skipped only when the daemon already stripped the path (--no-save).
+        if !self.save_path.is_empty() {
+            match export::file::save_png(&img, std::path::Path::new(&self.save_path)) {
+                Ok(()) => tracing::info!(path = %self.save_path, "saved"),
+                Err(e) => tracing::error!("save failed: {e}"),
+            }
+        }
         if let Err(e) = export::clipboard::copy(&img) {
             tracing::error!("clipboard copy failed: {e}");
         } else {
