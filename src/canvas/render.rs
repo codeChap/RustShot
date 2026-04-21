@@ -232,7 +232,10 @@ fn draw_counter_text(
     imageproc::drawing::draw_text_mut(img, color, tx, ty, scale, font, &text);
 }
 
-fn blur_region(img: &mut RgbaImage, b: Bounds, sigma: f32) {
+/// Crop + blur a region. Returns the clamped origin and the small blurred
+/// image so callers can either paste it back (full rasterization) or upload
+/// it as a live preview texture (overlay).
+pub fn blur_crop(img: &RgbaImage, b: Bounds, sigma: f32) -> Option<(u32, u32, RgbaImage)> {
     let img_w = img.width();
     let img_h = img.height();
     let x = b.x.max(0.0) as u32;
@@ -240,9 +243,14 @@ fn blur_region(img: &mut RgbaImage, b: Bounds, sigma: f32) {
     let w = (b.w.max(0.0) as u32).min(img_w.saturating_sub(x));
     let h = (b.h.max(0.0) as u32).min(img_h.saturating_sub(y));
     if w == 0 || h == 0 {
-        return;
+        return None;
     }
     let cropped = image::imageops::crop_imm(img, x, y, w, h).to_image();
-    let blurred = imageproc::filter::gaussian_blur_f32(&cropped, sigma.max(0.5));
-    image::imageops::replace(img, &blurred, x as i64, y as i64);
+    Some((x, y, imageproc::filter::gaussian_blur_f32(&cropped, sigma.max(0.5))))
+}
+
+fn blur_region(img: &mut RgbaImage, b: Bounds, sigma: f32) {
+    if let Some((x, y, blurred)) = blur_crop(img, b, sigma) {
+        image::imageops::replace(img, &blurred, x as i64, y as i64);
+    }
 }

@@ -10,6 +10,7 @@ mod daemon;
 mod dbus;
 mod error;
 mod export;
+mod tray;
 mod ui;
 
 fn main() -> Result<()> {

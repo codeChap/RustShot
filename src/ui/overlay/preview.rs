@@ -40,10 +40,9 @@ fn draw_annotation(painter: &egui::Painter, a: &Annotation) {
                 egui::Stroke::new(*width, color_to_egui(*color)),
             );
         }
-        Annotation::Blur { rect, .. } => {
-            let r = to_egui_rect(rect.x, rect.y, rect.w, rect.h);
-            painter.rect_filled(r, 0.0, egui::Color32::from_white_alpha(40));
-            painter.rect_stroke(r, 0.0, egui::Stroke::new(1.0, egui::Color32::WHITE));
+        Annotation::Blur { .. } => {
+            // Live preview: committed blurs are baked into the base texture in
+            // overlay::refresh_base_texture. Nothing to draw on top here.
         }
         Annotation::Counter { center, number, color, radius } => {
             let c = color_to_egui(*color);
@@ -68,6 +67,8 @@ pub(super) fn draw_draft(painter: &egui::Painter, draft: &Draft) {
         Draft::Pencil { points, style } => {
             draw_polyline(painter, points, style.width, color_to_egui(style.color));
         }
+        // Blur draft is painted as a real blurred texture by overlay::refresh_draft_blur.
+        Draft::Blur { .. } => {}
         // Other drafts are tiny enums — finalize+draw is cheap.
         other => {
             if let Some(annotation) = other.clone().finalize() {

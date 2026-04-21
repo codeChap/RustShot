@@ -91,6 +91,19 @@ pub(super) fn resize_rect(rect: egui::Rect, handle: Handle, delta: egui::Vec2) -
     egui::Rect::from_min_max(min, max)
 }
 
+pub(super) fn cursor_for_handle(h: Handle) -> egui::CursorIcon {
+    match h {
+        Handle::N  => egui::CursorIcon::ResizeNorth,
+        Handle::S  => egui::CursorIcon::ResizeSouth,
+        Handle::E  => egui::CursorIcon::ResizeEast,
+        Handle::W  => egui::CursorIcon::ResizeWest,
+        Handle::NE => egui::CursorIcon::ResizeNorthEast,
+        Handle::NW => egui::CursorIcon::ResizeNorthWest,
+        Handle::SE => egui::CursorIcon::ResizeSouthEast,
+        Handle::SW => egui::CursorIcon::ResizeSouthWest,
+    }
+}
+
 pub(super) fn draw_handles(painter: &egui::Painter, sel: egui::Rect) {
     let stroke = egui::Stroke::new(1.5, egui::Color32::from_rgb(255, 200, 0));
     for (_, p) in handle_positions(sel) {

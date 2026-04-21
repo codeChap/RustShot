@@ -39,6 +39,12 @@ async fn dbus_main(
     config: Arc<Config>,
     ui_tx: crossbeam_channel::Sender<ui::UiRequest>,
 ) -> Result<()> {
+    let sni_tray = crate::tray::sni::Tray {
+        capture: capture.clone(),
+        config: config.clone(),
+        ui_tx: ui_tx.clone(),
+    };
+    let tray_fallback = (capture.clone(), config.clone(), ui_tx.clone());
     let service = Service { capture, config, ui_tx };
     let built = zbus::connection::Builder::session()?
         .name(SERVICE_NAME)?
@@ -59,6 +65,31 @@ async fn dbus_main(
         Err(e) => return Err(e.into()),
     };
     tracing::info!(service = SERVICE_NAME, "rustshot daemon ready on DBus");
+
+    // Status-tray icon. Try SNI first (KDE / polybar / i3status-rust).
+    // If no SNI watcher exists on the bus — stock i3bar with tray_output
+    // is the common case — fall back to an XEmbed client. Matches what Qt
+    // does under the hood, which is why Flameshot works on i3bar tray.
+    use ksni::TrayMethods;
+    let _tray_handle = match sni_tray.spawn().await {
+        Ok(h) => {
+            tracing::info!("status-tray (SNI) registered");
+            Some(h)
+        }
+        Err(e) => {
+            tracing::info!("SNI unavailable ({e}); falling back to XEmbed");
+            let (cap, cfg, tx) = tray_fallback;
+            std::thread::Builder::new()
+                .name("rustshot-xembed".into())
+                .spawn(move || {
+                    if let Err(e) = crate::tray::xembed::run(cap, cfg, tx) {
+                        tracing::warn!("XEmbed tray unavailable: {e}");
+                    }
+                })?;
+            None
+        }
+    };
+
     tokio::signal::ctrl_c().await?;
     tracing::info!("shutting down");
     Ok(())

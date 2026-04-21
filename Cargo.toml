@@ -18,6 +18,7 @@ crossbeam-channel = "0.5"
 
 zbus = { version = "4", default-features = false, features = ["tokio"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "signal", "time"] }
+ksni = "0.3"
 
 x11rb = { version = "0.13", features = ["randr", "xfixes"] }
 image = { version = "0.25", default-features = false, features = ["png"] }
