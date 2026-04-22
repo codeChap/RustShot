@@ -82,10 +82,10 @@ fn draw_polyline(painter: &egui::Painter, points: &[Pos], width: f32, color: egu
     if points.len() < 2 {
         return;
     }
-    let stroke = egui::Stroke::new(width, color);
-    for win in points.windows(2) {
-        painter.line_segment([egui_from(win[0]), egui_from(win[1])], stroke);
-    }
+    // One Shape for the whole stroke — a long pencil stroke with 500 points
+    // was allocating 499 per-segment shapes per frame.
+    let pts: Vec<egui::Pos2> = points.iter().map(|p| egui_from(*p)).collect();
+    painter.add(egui::Shape::line(pts, egui::Stroke::new(width, color)));
 }
 
 fn draw_arrowhead(painter: &egui::Painter, start: Pos, end: Pos, width: f32, color: egui::Color32) {
