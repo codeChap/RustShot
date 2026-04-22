@@ -27,6 +27,7 @@ pub fn show(
     clipboard: bool,
     config: Arc<Config>,
 ) -> UiResult {
+    let t_show = std::time::Instant::now();
     let result = Arc::new(Mutex::new(UiResult::Cancelled));
     let result_for_app = result.clone();
 
@@ -50,6 +51,10 @@ pub fn show(
         "rustshot-overlay",
         options,
         Box::new(move |_cc| {
+            tracing::info!(
+                eframe_init_ms = t_show.elapsed().as_millis() as u64,
+                "overlay eframe ready (first paint imminent)"
+            );
             Ok(Box::new(OverlayApp::new(
                 image,
                 save_path,
@@ -167,9 +172,19 @@ impl OverlayApp {
     }
 
     /// Apply annotations onto a working copy, crop to selection if present.
+    /// Reuses `committed_base` (which already has every Blur baked in by
+    /// `refresh_base_texture`) so Save doesn't re-run Gaussian blur on a 4K
+    /// frame. Falls back to a fresh blur pass if the cache hasn't been built
+    /// yet (shouldn't happen — update() rebuilds it before any act()).
     fn compose(&self) -> RgbaImage {
-        let mut working = self.image.clone();
-        render::rasterize(&mut working, &self.canvas.annotations);
+        let (mut working, blurs_baked) = match self.committed_base.as_ref() {
+            Some(b) => (b.clone(), true),
+            None => (self.image.clone(), false),
+        };
+        if !blurs_baked {
+            render::apply_blurs(&mut working, &self.canvas.annotations);
+        }
+        render::rasterize_overlays(&mut working, &self.canvas.annotations);
         if let Some(sel) = self.selection {
             let (x, y, w, h) = clamp_to_image(sel, self.image.width(), self.image.height());
             if w > 0 && h > 0 {

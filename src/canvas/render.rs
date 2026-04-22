@@ -14,19 +14,23 @@ fn font() -> &'static FontRef<'static> {
     })
 }
 
-pub fn rasterize(img: &mut RgbaImage, annotations: &[Annotation]) {
-    if annotations.is_empty() {
-        return;
-    }
-
-    // 1. Blur passes mutate img directly via crop+replace, before vector overlays.
+/// Pass 1: bake every Blur annotation into `img` via crop+gaussian+replace.
+pub fn apply_blurs(img: &mut RgbaImage, annotations: &[Annotation]) {
     for a in annotations {
         if let Annotation::Blur { rect, sigma } = a {
             blur_region(img, *rect, *sigma);
         }
     }
+}
 
-    // 2. Vector primitives via tiny-skia, sharing the image's pixel buffer.
+/// Pass 2 + 3: vector primitives via tiny-skia, then counter text via imageproc.
+/// Blur annotations are skipped — caller is responsible for having baked them
+/// in already (or wanting them omitted, e.g. when `img` is the cached
+/// committed_base).
+pub fn rasterize_overlays(img: &mut RgbaImage, annotations: &[Annotation]) {
+    if annotations.is_empty() {
+        return;
+    }
     let w = img.width();
     let h = img.height();
     {
@@ -60,7 +64,6 @@ pub fn rasterize(img: &mut RgbaImage, annotations: &[Annotation]) {
         }
     }
 
-    // 3. Counter numbers via imageproc::draw_text_mut.
     let font = font();
     for a in annotations {
         if let Annotation::Counter { center, number, color, radius } = a {
