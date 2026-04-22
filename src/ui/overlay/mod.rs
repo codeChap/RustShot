@@ -18,7 +18,8 @@ use draft::Draft;
 use eframe::egui;
 use image::{Rgba, RgbaImage};
 use selection::{cursor_for_handle, draw_handles, handle_at, resize_rect, SelectionEdit};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+use tokio::sync::oneshot;
 
 pub fn show(
     image: RgbaImage,
@@ -26,10 +27,10 @@ pub fn show(
     save_path: String,
     clipboard: bool,
     config: Arc<Config>,
-) -> UiResult {
+    result_tx: oneshot::Sender<UiResult>,
+) {
     let t_show = std::time::Instant::now();
-    let result = Arc::new(Mutex::new(UiResult::Cancelled));
-    let result_for_app = result.clone();
+    let mut result_tx = Some(result_tx);
 
     let (sx, sy) = screen_origin;
     let (img_w, img_h) = (image.width(), image.height());
@@ -60,13 +61,10 @@ pub fn show(
                 save_path,
                 clipboard,
                 config,
-                result_for_app,
+                result_tx.take().expect("eframe builds the app exactly once"),
             )))
         }),
     );
-
-    let lock = result.lock().unwrap();
-    lock.clone()
 }
 
 /// Held across a drag so the handler doesn't flip mid-drag when `selection`
@@ -119,7 +117,8 @@ struct OverlayApp {
     edit_rect_start: Option<egui::Rect>,
     draft: Option<Draft>,
     canvas: Canvas,
-    result: Arc<Mutex<UiResult>>,
+    /// Consumed on the first finish() / Drop. Option so we can `take()` it.
+    result_tx: Option<oneshot::Sender<UiResult>>,
 }
 
 impl OverlayApp {
@@ -128,7 +127,7 @@ impl OverlayApp {
         save_path: String,
         clipboard: bool,
         config: Arc<Config>,
-        result: Arc<Mutex<UiResult>>,
+        result_tx: oneshot::Sender<UiResult>,
     ) -> Self {
         let mut canvas = Canvas::default();
         if let Some(c) = config::parse_color(&config.defaults.color) {
@@ -165,12 +164,14 @@ impl OverlayApp {
             edit_rect_start: None,
             draft: None,
             canvas,
-            result,
+            result_tx: Some(result_tx),
         }
     }
 
     fn finish(&mut self, value: UiResult, ctx: &egui::Context) {
-        *self.result.lock().unwrap() = value;
+        if let Some(tx) = self.result_tx.take() {
+            let _ = tx.send(value);
+        }
         ctx.send_viewport_cmd(egui::ViewportCommand::Close);
     }
 
@@ -218,6 +219,17 @@ impl OverlayApp {
             }
         }
         UiResult::Done
+    }
+}
+
+impl Drop for OverlayApp {
+    /// If eframe tears down the window without finish() being hit (e.g. WM
+    /// kills the process), make sure the caller's oneshot resolves rather
+    /// than dangling forever. Treat it as a cancel.
+    fn drop(&mut self) {
+        if let Some(tx) = self.result_tx.take() {
+            let _ = tx.send(UiResult::Cancelled);
+        }
     }
 }
 
