@@ -105,10 +105,12 @@ struct OverlayApp {
     committed_base: Option<RgbaImage>,
     committed_blur_sig: Vec<BlurKey>,
     texture: Option<egui::TextureHandle>,
-    /// Small texture for the in-progress Blur draft, updated every frame
-    /// during drag so the user sees the real blur (not a placeholder square).
+    /// Small texture for the in-progress Blur draft. Rebuilt only when the
+    /// (bounds, sigma) key actually changes — egui repaints faster than the
+    /// pointer moves a pixel, so most frames during a drag are no-ops.
     draft_blur_tex: Option<egui::TextureHandle>,
     draft_blur_rect: Option<egui::Rect>,
+    draft_blur_sig: Option<BlurKey>,
     mode: Mode,
     selection: Option<egui::Rect>,
     sel_drag_start: Option<egui::Pos2>,
@@ -154,6 +156,7 @@ impl OverlayApp {
             texture: None,
             draft_blur_tex: None,
             draft_blur_rect: None,
+            draft_blur_sig: None,
             mode: Mode::default(),
             selection: None,
             sel_drag_start: None,
@@ -600,6 +603,7 @@ fn refresh_draft_blur(app: &mut OverlayApp, ctx: &egui::Context) {
     let Some(Draft::Blur { start, end, sigma }) = app.draft.as_ref() else {
         app.draft_blur_tex = None;
         app.draft_blur_rect = None;
+        app.draft_blur_sig = None;
         return;
     };
 
@@ -610,19 +614,30 @@ fn refresh_draft_blur(app: &mut OverlayApp, ctx: &egui::Context) {
     if x1 - x0 < 2.0 || y1 - y0 < 2.0 {
         app.draft_blur_tex = None;
         app.draft_blur_rect = None;
+        app.draft_blur_sig = None;
         return;
     }
 
-    let src = app.committed_base.as_ref().unwrap_or(&app.image);
     let bounds = Bounds {
         x: x0,
         y: y0,
         w: x1 - x0,
         h: y1 - y0,
     };
+    // Skip the gaussian if neither bounds nor sigma changed since the last
+    // build. egui drives update() far faster than the pointer moves a pixel,
+    // so this is the difference between blurring every frame and blurring
+    // only when something actually changed.
+    let key = blur_key(bounds, *sigma);
+    if app.draft_blur_sig == Some(key) && app.draft_blur_tex.is_some() {
+        return;
+    }
+
+    let src = app.committed_base.as_ref().unwrap_or(&app.image);
     let Some((x, y, blurred)) = render::blur_crop(src, bounds, *sigma) else {
         app.draft_blur_tex = None;
         app.draft_blur_rect = None;
+        app.draft_blur_sig = None;
         return;
     };
 
@@ -639,6 +654,7 @@ fn refresh_draft_blur(app: &mut OverlayApp, ctx: &egui::Context) {
         egui::pos2(x as f32, y as f32),
         egui::pos2((x + blurred.width()) as f32, (y + blurred.height()) as f32),
     ));
+    app.draft_blur_sig = Some(key);
 }
 
 fn clamp_to_image(sel: egui::Rect, max_w: u32, max_h: u32) -> (u32, u32, u32, u32) {
