@@ -571,6 +571,11 @@ fn paint_dim_around(
 
 /// Rebuild `texture` (and `committed_base`) whenever the committed Blur list
 /// changes. Non-blur annotations stay as egui primitives drawn in preview.
+///
+/// Fast path: when the new sig is the old sig plus one new entry at the end
+/// (the common case — user commits one more Blur), blur only the new region
+/// into the existing `committed_base` instead of rebuilding from scratch.
+/// Undo / non-append changes still trigger a full rebuild.
 fn refresh_base_texture(app: &mut OverlayApp, ctx: &egui::Context) {
     let current: Vec<BlurKey> = app
         .canvas
@@ -582,9 +587,34 @@ fn refresh_base_texture(app: &mut OverlayApp, ctx: &egui::Context) {
         })
         .collect();
 
-    let needs_rebuild = app.texture.is_none() || app.committed_blur_sig != current;
-    if !needs_rebuild {
+    if app.texture.is_some() && app.committed_blur_sig == current {
         return;
+    }
+
+    let can_append = app.committed_base.is_some()
+        && current.len() == app.committed_blur_sig.len() + 1
+        && current.starts_with(&app.committed_blur_sig);
+
+    if can_append {
+        // The last Blur annotation is the one that produced the new entry.
+        if let Some((rect, sigma)) = app
+            .canvas
+            .annotations
+            .iter()
+            .rev()
+            .find_map(|a| match a {
+                Annotation::Blur { rect, sigma } => Some((*rect, *sigma)),
+                _ => None,
+            })
+        {
+            let base = app.committed_base.as_mut().unwrap();
+            if let Some((x, y, blurred)) = render::blur_crop(base, rect, sigma) {
+                image::imageops::replace(base, &blurred, x as i64, y as i64);
+            }
+            upload_base_texture(app, ctx);
+            app.committed_blur_sig = current;
+            return;
+        }
     }
 
     let mut base = app.image.clone();
@@ -595,7 +625,16 @@ fn refresh_base_texture(app: &mut OverlayApp, ctx: &egui::Context) {
             }
         }
     }
+    app.committed_base = Some(base);
+    upload_base_texture(app, ctx);
+    app.committed_blur_sig = current;
+}
 
+fn upload_base_texture(app: &mut OverlayApp, ctx: &egui::Context) {
+    let base = app
+        .committed_base
+        .as_ref()
+        .expect("committed_base set before upload");
     let size = [base.width() as usize, base.height() as usize];
     let img = egui::ColorImage::from_rgba_unmultiplied(size, base.as_raw());
     match app.texture.as_mut() {
@@ -604,8 +643,6 @@ fn refresh_base_texture(app: &mut OverlayApp, ctx: &egui::Context) {
             app.texture = Some(ctx.load_texture("base", img, egui::TextureOptions::LINEAR));
         }
     }
-    app.committed_base = Some(base);
-    app.committed_blur_sig = current;
 }
 
 /// Update the small draft-blur texture so the in-progress Blur shows the
