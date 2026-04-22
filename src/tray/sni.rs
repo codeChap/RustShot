@@ -6,12 +6,14 @@ use crate::capture::X11Capture;
 use crate::config::Config;
 use crate::ui::UiRequest;
 use crossbeam_channel::Sender;
+use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
 pub struct Tray {
     pub capture: Arc<X11Capture>,
     pub config: Arc<Config>,
     pub ui_tx: Sender<UiRequest>,
+    pub gui_busy: Arc<AtomicBool>,
 }
 
 impl ksni::Tray for Tray {
@@ -37,7 +39,12 @@ impl ksni::Tray for Tray {
     }
 
     fn activate(&mut self, _x: i32, _y: i32) {
-        super::spawn_capture(self.capture.clone(), self.config.clone(), self.ui_tx.clone());
+        super::spawn_capture(
+            self.capture.clone(),
+            self.config.clone(),
+            self.ui_tx.clone(),
+            self.gui_busy.clone(),
+        );
     }
 
     fn menu(&self) -> Vec<ksni::MenuItem<Self>> {
@@ -50,6 +57,7 @@ impl ksni::Tray for Tray {
                         this.capture.clone(),
                         this.config.clone(),
                         this.ui_tx.clone(),
+                        this.gui_busy.clone(),
                     );
                 }),
                 ..Default::default()

@@ -224,12 +224,15 @@ fn paint_glyph(
         Glyph::Copy => {
             let side = d * 0.34;
             let off = d * 0.08;
+            // Composite bbox sits lower-right of `c`; nudge the whole glyph up
+            // so it reads as vertically centered inside the circular button.
+            let shift = egui::vec2(-3.0, -3.0);
             let back = egui::Rect::from_min_size(
-                c + egui::vec2(-off * 2.0, -off * 2.0),
+                c + egui::vec2(-off * 2.0, -off * 2.0) + shift,
                 egui::vec2(side, side),
             );
             painter.rect_stroke(back, 1.5, stroke);
-            let front = egui::Rect::from_min_size(c, egui::vec2(side, side));
+            let front = egui::Rect::from_min_size(c + shift, egui::vec2(side, side));
             painter.rect_filled(front, 1.5, bg);
             painter.rect_stroke(front, 1.5, stroke);
         }

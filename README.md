@@ -83,12 +83,28 @@ for_window [class="rustshot"] floating enable, border none
 exec --no-startup-id rustshot
 
 # PrintScreen → drag region → save (auto-path) + clipboard
-bindsym Print            exec --no-startup-id rustshot gui -c
-bindsym $mod+Print       exec --no-startup-id rustshot screen -c
-bindsym $mod+Shift+Print exec --no-startup-id rustshot full -c
+# dbus-send (~40KB, always cache-hot) talks to the daemon directly.
+# Bypasses the 13MB rustshot binary that `rustshot gui -c` would otherwise
+# spawn-and-exit on every keypress. Same work, same code path as a tray click.
+bindsym Print exec --no-startup-id dbus-send --session \
+    --dest=org.rustshot.RustShot --type=method_call / \
+    org.rustshot.RustShot.graphicCaptureFlags \
+    string:"" uint32:0 boolean:true boolean:false string:""
+
+bindsym $mod+Print exec --no-startup-id dbus-send --session \
+    --dest=org.rustshot.RustShot --type=method_call / \
+    org.rustshot.RustShot.captureScreenFlags \
+    int32:-1 string:"" uint32:0 boolean:true boolean:false string:""
+
+bindsym $mod+Shift+Print exec --no-startup-id dbus-send --session \
+    --dest=org.rustshot.RustShot --type=method_call / \
+    org.rustshot.RustShot.fullScreenFlags \
+    string:"" uint32:0 boolean:true boolean:false string:""
 ```
 
-Reload with `i3-msg reload`.
+Reload with `i3-msg reload`. The `boolean:true` is the clipboard flag (matches `-c`); flip to `boolean:false` to skip clipboard.
+
+The `rustshot gui` / `rustshot full` / `rustshot screen` CLI subcommands stay useful for one-shot scripting (`rustshot gui --delay 3 -p /tmp/foo.png`) where flag-parsing is convenient. For hot keybinds you skip the binary spawn entirely.
 
 ## systemd autostart (alternative to i3 `exec`)
 

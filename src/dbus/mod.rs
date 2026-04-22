@@ -1,9 +1,10 @@
 use crate::capture::X11Capture;
 use crate::config::{self, Config};
 use crate::export;
-use crate::ui::{UiRequest, UiResult};
+use crate::ui::{BusyGuard, UiRequest, UiResult};
 use crossbeam_channel::Sender;
 use std::path::Path;
+use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use zbus::interface;
 
@@ -14,6 +15,7 @@ pub struct Service {
     pub capture: Arc<X11Capture>,
     pub config: Arc<Config>,
     pub ui_tx: Sender<UiRequest>,
+    pub gui_busy: Arc<AtomicBool>,
 }
 
 #[interface(name = "org.rustshot.RustShot")]
@@ -35,6 +37,12 @@ impl Service {
         no_save: bool,
         _id: String,
     ) -> zbus::fdo::Result<()> {
+        // One overlay at a time. If a repeated PrtSc arrives while an overlay
+        // is already up, drop it silently instead of letting captures queue.
+        let Some(guard) = BusyGuard::acquire(&self.gui_busy) else {
+            tracing::info!("capture ignored — overlay already active");
+            return Ok(());
+        };
         let resolved = resolve_save_path(path, no_save, &self.config);
         gui_capture(
             self.capture.clone(),
@@ -43,6 +51,7 @@ impl Service {
             resolved,
             clipboard,
             delay,
+            guard,
         )
         .await
     }
@@ -154,37 +163,68 @@ async fn gui_capture(
     path: String,
     clipboard: bool,
     delay: u32,
+    busy_guard: BusyGuard,
 ) -> zbus::fdo::Result<()> {
+    let t0 = std::time::Instant::now();
     sleep_delay(delay).await;
-    let include_cursor = config.capture.include_cursor;
-    let cap = capture.clone();
-    let (image, screen_origin) = run_blocking(move || -> anyhow::Result<_> {
-        let screen = cap.cursor_screen()?;
-        let img = cap.capture_screen_with_cursor(&screen, include_cursor)?;
-        Ok((img, (screen.x, screen.y)))
+    let resp_rx = run_blocking(move || {
+        submit_overlay(capture.as_ref(), config, &ui_tx, path, clipboard, busy_guard)
     })
     .await?;
-
-    let (resp_tx, resp_rx) = tokio::sync::oneshot::channel();
-    ui_tx
-        .send(UiRequest::ShowOverlay {
-            image,
-            screen_origin,
-            save_path: path,
-            clipboard,
-            config,
-            result_tx: resp_tx,
-        })
-        .map_err(|e| zbus::fdo::Error::Failed(format!("ui send: {e}")))?;
     let result = resp_rx
         .await
         .map_err(|e| zbus::fdo::Error::Failed(format!("ui recv: {e}")))?;
-
+    tracing::info!(
+        total_ms = t0.elapsed().as_millis() as u64,
+        "gui_capture finished"
+    );
     match result {
         UiResult::Cancelled => tracing::info!("overlay cancelled"),
         UiResult::Done => tracing::info!("overlay done"),
     }
     Ok(())
+}
+
+/// Capture the cursor's monitor and submit a `ShowOverlay` request to the UI
+/// loop. The single shared entrypoint for both the DBus `graphicCapture*`
+/// methods and the tray click — same code path, same log line, same gating.
+///
+/// Sync (it does the blocking X11 capture and a non-blocking channel send).
+/// Returns the receiver for the overlay's eventual `UiResult`. DBus awaits it
+/// to know when the method call is "done"; the tray drops it (fire-and-forget).
+pub fn submit_overlay(
+    capture: &X11Capture,
+    config: Arc<Config>,
+    ui_tx: &Sender<UiRequest>,
+    save_path: String,
+    clipboard: bool,
+    busy_guard: BusyGuard,
+) -> anyhow::Result<tokio::sync::oneshot::Receiver<UiResult>> {
+    let t0 = std::time::Instant::now();
+    let include_cursor = config.capture.include_cursor;
+    let screen = capture.cursor_screen()?;
+    let t_screen = std::time::Instant::now();
+    let image = capture.capture_screen_with_cursor(&screen, include_cursor)?;
+    let t_capture = std::time::Instant::now();
+
+    let (resp_tx, resp_rx) = tokio::sync::oneshot::channel();
+    ui_tx.send(UiRequest::ShowOverlay {
+        image,
+        screen_origin: (screen.x, screen.y),
+        save_path,
+        clipboard,
+        config,
+        result_tx: resp_tx,
+        _busy_guard: Some(busy_guard),
+    })?;
+    let t_send = std::time::Instant::now();
+    tracing::info!(
+        cursor_screen_ms = (t_screen - t0).as_millis() as u64,
+        capture_ms = (t_capture - t_screen).as_millis() as u64,
+        send_ms = (t_send - t_capture).as_millis() as u64,
+        "overlay submitted — eframe startup follows"
+    );
+    Ok(resp_rx)
 }
 
 enum CaptureKind {

@@ -119,6 +119,11 @@ struct OverlayApp {
     canvas: Canvas,
     /// Consumed on the first finish() / Drop. Option so we can `take()` it.
     result_tx: Option<oneshot::Sender<UiResult>>,
+    /// Stays true until we've actually observed `focused=true` from winit.
+    /// i3+X11 racily ignores the first focus request when another overlay
+    /// just closed; re-requesting every frame until granted self-corrects.
+    needs_focus: bool,
+    pixels_per_point: f32,
 }
 
 impl OverlayApp {
@@ -165,6 +170,8 @@ impl OverlayApp {
             draft: None,
             canvas,
             result_tx: Some(result_tx),
+            needs_focus: true,
+            pixels_per_point: 1.0,
         }
     }
 
@@ -239,120 +246,30 @@ impl eframe::App for OverlayApp {
     }
 
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.pixels_per_point = ctx.pixels_per_point();
+        if self.needs_focus {
+            if ctx.input(|i| i.focused) {
+                self.needs_focus = false;
+            } else {
+                ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+                ctx.request_repaint();
+            }
+        }
+
         refresh_base_texture(self, ctx);
         refresh_draft_blur(self, ctx);
-        let texture_id = self.texture.as_ref().unwrap().id();
-        let mut early_finish: Option<UiResult> = None;
 
         let k = Keys::read(ctx);
-
-        if k.esc {
-            self.finish(UiResult::Cancelled, ctx);
+        if let Some(result) = self.process_input(ctx, &k) {
+            self.finish(result, ctx);
             return;
-        }
-        if k.ctrl_z { self.canvas.undo(); }
-        if k.ctrl_y { self.canvas.redo(); }
-        if k.enter {
-            let r = self.act(false);
-            self.finish(r, ctx);
-            return;
-        }
-        if k.ctrl_c {
-            let r = self.act(true);
-            self.finish(r, ctx);
-            return;
-        }
-        if let Some(t) = k.tool_swap {
-            self.canvas.tool = t;
-        }
-
-        if let Some(action) = toolbar::show(ctx, &mut self.canvas, &self.palette) {
-            match action {
-                toolbar::Action::Cancel => { self.finish(UiResult::Cancelled, ctx); return; }
-                toolbar::Action::Undo => self.canvas.undo(),
-                toolbar::Action::Redo => self.canvas.redo(),
-            }
         }
 
         egui::CentralPanel::default()
             .frame(egui::Frame::none().fill(egui::Color32::BLACK))
             .show(ctx, |ui| {
-                let screen_rect = ui.max_rect();
-                let response = ui.interact(
-                    screen_rect,
-                    egui::Id::new("rustshot-overlay-canvas"),
-                    egui::Sense::click_and_drag(),
-                );
-
-                match self.mode {
-                    Mode::SelectingRegion => handle_region_drag(self, &response),
-                    Mode::Annotating => handle_tool_input(self, &response, ctx),
-                }
-
-                ctx.set_cursor_icon(pick_cursor(self, &response, ctx));
-
-                let painter = ui.painter();
-                painter.image(
-                    texture_id,
-                    screen_rect,
-                    egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
-                    egui::Color32::WHITE,
-                );
-                if let (Some(tex), Some(rect)) =
-                    (self.draft_blur_tex.as_ref(), self.draft_blur_rect)
-                {
-                    painter.image(
-                        tex.id(),
-                        rect,
-                        egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
-                        egui::Color32::WHITE,
-                    );
-                }
-
-                let dim = egui::Color32::from_black_alpha(128);
-                if let Some(sel) = self.selection {
-                    paint_dim_around(painter, screen_rect, sel, dim);
-                    painter.rect_stroke(
-                        sel,
-                        0.0,
-                        egui::Stroke::new(2.0, egui::Color32::from_rgb(255, 200, 0)),
-                    );
-                    draw_handles(painter, sel);
-                } else {
-                    painter.rect_filled(screen_rect, 0.0, dim);
-                    painter.text(
-                        screen_rect.center(),
-                        egui::Align2::CENTER_CENTER,
-                        "drag to select a region  -  Enter saves full screen  -  Esc cancels",
-                        egui::FontId::proportional(18.0),
-                        egui::Color32::from_white_alpha(220),
-                    );
-                }
-
-                preview::draw_annotations(painter, &self.canvas.annotations);
-                if let Some(d) = &self.draft {
-                    preview::draw_draft(painter, d);
-                }
-
-                if let Some(sel) = self.selection {
-                    let strip = tool_buttons::strip_rect(screen_rect, sel);
-                    if let Some(a) = tool_buttons::show(ui, strip, &mut self.canvas.tool) {
-                        match a {
-                            tool_buttons::Action::Save => {
-                                early_finish = Some(self.act(false));
-                            }
-                            tool_buttons::Action::Copy => {
-                                early_finish = Some(self.act(true));
-                            }
-                        }
-                    }
-                }
+                self.render_overlay(ui);
             });
-
-        if let Some(r) = early_finish {
-            self.finish(r, ctx);
-            return;
-        }
 
         // Only keep repainting while something is animating.
         if self.draft.is_some()
@@ -360,6 +277,109 @@ impl eframe::App for OverlayApp {
             || self.selection_edit != SelectionEdit::None
         {
             ctx.request_repaint();
+        }
+    }
+}
+
+impl OverlayApp {
+    fn process_input(&mut self, ctx: &egui::Context, k: &Keys) -> Option<UiResult> {
+        if k.esc {
+            return Some(UiResult::Cancelled);
+        }
+        if k.ctrl_z { self.canvas.undo(); }
+        if k.ctrl_y { self.canvas.redo(); }
+        if k.enter {
+            return Some(self.act(false));
+        }
+        if k.ctrl_c {
+            return Some(self.act(true));
+        }
+        if let Some(t) = k.tool_swap {
+            self.canvas.tool = t;
+        }
+
+        if let Some(action) = toolbar::show(ctx, &mut self.canvas, &self.palette) {
+            match action {
+                toolbar::Action::Cancel => return Some(UiResult::Cancelled),
+                toolbar::Action::Undo => self.canvas.undo(),
+                toolbar::Action::Redo => self.canvas.redo(),
+            }
+        }
+        None
+    }
+
+    fn render_overlay(&mut self, ui: &mut egui::Ui) {
+        let screen_rect = ui.max_rect();
+        let response = ui.interact(
+            screen_rect,
+            egui::Id::new("rustshot-overlay-canvas"),
+            egui::Sense::click_and_drag(),
+        );
+
+        match self.mode {
+            Mode::SelectingRegion => handle_region_drag(self, &response),
+            Mode::Annotating => {
+                let ctx = ui.ctx().clone();
+                handle_tool_input(self, &response, &ctx);
+            }
+        }
+
+        ui.ctx().set_cursor_icon(pick_cursor(self, &response, ui.ctx()));
+
+        let painter = ui.painter();
+        let texture_id = self.texture.as_ref().unwrap().id();
+        
+        painter.image(
+            texture_id,
+            screen_rect,
+            egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+            egui::Color32::WHITE,
+        );
+
+        if let (Some(tex), Some(rect)) = (self.draft_blur_tex.as_ref(), self.draft_blur_rect) {
+            painter.image(
+                tex.id(),
+                rect,
+                egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                egui::Color32::WHITE,
+            );
+        }
+
+        let dim = egui::Color32::from_black_alpha(128);
+        if let Some(sel) = self.selection {
+            paint_dim_around(painter, screen_rect, sel, dim);
+            painter.rect_stroke(
+                sel,
+                0.0,
+                egui::Stroke::new(2.0, egui::Color32::from_rgb(255, 200, 0)),
+            );
+            draw_handles(painter, sel);
+        } else {
+            painter.rect_filled(screen_rect, 0.0, dim);
+            painter.text(
+                screen_rect.center(),
+                egui::Align2::CENTER_CENTER,
+                "drag to select a region  -  Enter saves full screen  -  Esc cancels",
+                egui::FontId::proportional(18.0),
+                egui::Color32::from_white_alpha(220),
+            );
+        }
+
+        preview::draw_annotations(painter, &self.canvas.annotations);
+        if let Some(d) = &self.draft {
+            preview::draw_draft(painter, d);
+        }
+
+        if let Some(sel) = self.selection {
+            let strip = tool_buttons::strip_rect(screen_rect, sel);
+            let ctx = ui.ctx().clone();
+            if let Some(a) = tool_buttons::show(ui, strip, &mut self.canvas.tool) {
+                let r = match a {
+                    tool_buttons::Action::Save => self.act(false),
+                    tool_buttons::Action::Copy => self.act(true),
+                };
+                self.finish(r, &ctx);
+            }
         }
     }
 }
