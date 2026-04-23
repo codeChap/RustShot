@@ -10,13 +10,13 @@ mod selection;
 mod tool_buttons;
 
 use crate::canvas::{render, Annotation, Bounds, Canvas, ToolKind};
-use crate::config::{self, Config};
+use crate::config::Config;
 use crate::export;
-use crate::ui::{toolbar, UiResult};
+use crate::ui::UiResult;
 use convert::pos_from;
 use draft::Draft;
 use eframe::egui;
-use image::{Rgba, RgbaImage};
+use image::RgbaImage;
 use selection::{cursor_for_handle, draw_handles, handle_at, resize_rect, SelectionEdit};
 use std::sync::Arc;
 use tokio::sync::oneshot;
@@ -95,7 +95,6 @@ struct OverlayApp {
     image: RgbaImage,
     save_path: String,
     clipboard_pref: bool,
-    palette: Vec<Rgba<u8>>,
     counter_radius: f32,
     blur_sigma: f32,
     /// `image` with all committed Blur annotations applied. Rebuilt only when
@@ -134,25 +133,14 @@ impl OverlayApp {
         config: Arc<Config>,
         result_tx: oneshot::Sender<UiResult>,
     ) -> Self {
-        let mut canvas = Canvas::default();
-        if let Some(c) = config::parse_color(&config.defaults.color) {
-            canvas.style.color = c;
-        }
-        canvas.style.width = config.defaults.width.max(1.0);
-        if let Some(t) = config::parse_tool(&config.defaults.initial_tool) {
-            canvas.tool = t;
-        }
-        let palette = config
-            .palette
-            .colors
-            .iter()
-            .filter_map(|s| config::parse_color(s))
-            .collect();
+        // Color and stroke width are deliberately hardcoded (red, 4px) — the
+        // overlay is keyboard-only, no in-overlay color/width controls. Take
+        // them straight from `Canvas::default()`.
+        let canvas = Canvas::default();
         Self {
             image,
             save_path,
             clipboard_pref: clipboard,
-            palette,
             counter_radius: config.defaults.counter_radius.max(4.0),
             blur_sigma: config.defaults.blur_sigma.max(0.5),
             committed_base: None,
@@ -260,7 +248,7 @@ impl eframe::App for OverlayApp {
         refresh_draft_blur(self, ctx);
 
         let k = Keys::read(ctx);
-        if let Some(result) = self.process_input(ctx, &k) {
+        if let Some(result) = self.process_input(&k) {
             self.finish(result, ctx);
             return;
         }
@@ -282,7 +270,7 @@ impl eframe::App for OverlayApp {
 }
 
 impl OverlayApp {
-    fn process_input(&mut self, ctx: &egui::Context, k: &Keys) -> Option<UiResult> {
+    fn process_input(&mut self, k: &Keys) -> Option<UiResult> {
         if k.esc {
             return Some(UiResult::Cancelled);
         }
@@ -296,14 +284,6 @@ impl OverlayApp {
         }
         if let Some(t) = k.tool_swap {
             self.canvas.tool = t;
-        }
-
-        if let Some(action) = toolbar::show(ctx, &mut self.canvas, &self.palette) {
-            match action {
-                toolbar::Action::Cancel => return Some(UiResult::Cancelled),
-                toolbar::Action::Undo => self.canvas.undo(),
-                toolbar::Action::Redo => self.canvas.redo(),
-            }
         }
         None
     }

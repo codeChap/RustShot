@@ -1,5 +1,4 @@
 pub mod overlay;
-pub mod toolbar;
 
 use crate::config::Config;
 use image::RgbaImage;

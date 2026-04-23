@@ -121,24 +121,17 @@ The unit's `ExecStart` is `%h/.cargo/bin/rustshot`, matching `cargo install`.
 
 `~/.config/rustshot/config.toml` — sample at [`data/sample-config.toml`](data/sample-config.toml). All sections + keys are optional; missing values fall back to defaults.
 
+Annotation color and stroke width are deliberately not configurable — the overlay is keyboard-only, hardcoded to red + 4px.
+
 ```toml
 [defaults]
-color = "#ff3232"                       # default annotation color (#rrggbb or #rrggbbaa)
-width = 4.0                             # default stroke width
 counter_radius = 16.0                   # auto-counter bubble radius
 blur_sigma = 12.0                       # blur strength
-initial_tool = "rect"                   # pencil | arrow | rect | ellipse | blur | counter
 save_dir = "~/Pictures/screenshots"     # used when no -p flag is given
 filename_pattern = "%Y%m%d-%H%M%S.png"  # strftime format (chrono::format)
 
 [capture]
 include_cursor = false                  # composite the X11 cursor (XFixes) into screenshots
-
-[palette]
-colors = [
-  "#ff3232", "#ffc800", "#50c850", "#32b4dc",
-  "#4664dc", "#c850c8", "#ffffff", "#000000",
-]
 ```
 
 The daemon reads the config at startup. To apply changes:
@@ -180,9 +173,9 @@ src/
 │   └── render.rs               # rasterize annotations onto image (tiny-skia + imageproc)
 ├── ui/
 │   ├── mod.rs                  # UiRequest / UiResult channel types
-│   ├── toolbar.rs              # bottom toolbar widget
 │   └── overlay/
 │       ├── mod.rs              # OverlayApp + eframe update loop + input dispatch
+│       ├── tool_buttons.rs     # floating Save/Copy + tool selector strip
 │       ├── selection.rs        # handles + hit-testing + resize math
 │       ├── draft.rs            # in-progress Annotation (Draft enum)
 │       ├── preview.rs          # egui-painter preview rendering

@@ -29,7 +29,7 @@ use std::sync::Arc;
 use x11rb::connection::Connection;
 use x11rb::protocol::xproto::{
     AtomEnum, ChangeWindowAttributesAux, ClientMessageEvent, ConnectionExt, CreateGCAux,
-    CreateWindowAux, EventMask, Gcontext, PropMode, Rectangle, Window, WindowClass,
+    CreateWindowAux, EventMask, Gcontext, GrabMode, PropMode, Rectangle, Window, WindowClass,
     CLIENT_MESSAGE_EVENT,
 };
 use x11rb::protocol::Event;
@@ -89,6 +89,11 @@ pub fn run(
                     ui_tx.clone(),
                     gui_busy.clone(),
                 );
+            }
+            Event::ButtonPress(e) if e.event == wid && e.detail == 3 => {
+                if let Err(err) = show_quit_menu(&conn, root, e.root_x, e.root_y) {
+                    tracing::warn!("quit menu failed: {err}");
+                }
             }
             Event::ReparentNotify(e) if e.window == wid && e.parent == root => {
                 // Manager unmapped / closed and pushed us back onto root.
@@ -267,4 +272,148 @@ fn paint(
 
 fn intern(conn: &RustConnection, name: &str) -> anyhow::Result<u32> {
     Ok(conn.intern_atom(false, name.as_bytes())?.reply()?.atom)
+}
+
+/// Modal popup with a single "Quit" item, anchored at the right-click position.
+/// Pointer-grabs so a click outside dismisses, a click inside exits the daemon.
+/// Uses the X core "fixed" font (server-side bitmap) so we don't drag in any
+/// client-side text-rendering deps for a 4-character label.
+fn show_quit_menu(
+    conn: &RustConnection,
+    root: Window,
+    root_x: i16,
+    root_y: i16,
+) -> anyhow::Result<()> {
+    const W: u16 = 96;
+    const H: u16 = 28;
+    const POPUP_BG: u32 = 0x0028_2830;
+    const POPUP_BORDER: u32 = 0x005A_5A6C;
+    const POPUP_FG: u32 = 0x00FF_FFFF;
+    // X core "fixed" font is a 6x13 bitmap.
+    const GLYPH_W: i16 = 6;
+    const ASCENT: i16 = 10;
+
+    // Place near the cursor; clamp to the root window so the popup stays
+    // on-screen no matter where the tray icon lives.
+    let geom = conn.get_geometry(root)?.reply()?;
+    let mut x = root_x;
+    let mut y = root_y;
+    if x + W as i16 > geom.width as i16 {
+        x = geom.width as i16 - W as i16 - 2;
+    }
+    if y + H as i16 > geom.height as i16 {
+        y = (root_y - H as i16).max(0);
+    }
+    if x < 0 {
+        x = 0;
+    }
+    if y < 0 {
+        y = 0;
+    }
+
+    let popup = conn.generate_id()?;
+    let attrs = CreateWindowAux::default()
+        .override_redirect(1)
+        .event_mask(EventMask::EXPOSURE | EventMask::BUTTON_PRESS)
+        .background_pixel(POPUP_BG);
+    conn.create_window(
+        x11rb::COPY_DEPTH_FROM_PARENT,
+        popup,
+        root,
+        x,
+        y,
+        W,
+        H,
+        0,
+        WindowClass::INPUT_OUTPUT,
+        x11rb::COPY_FROM_PARENT,
+        &attrs,
+    )?;
+
+    let gc_bg = conn.generate_id()?;
+    conn.create_gc(gc_bg, popup, &CreateGCAux::default().foreground(POPUP_BG))?;
+    let gc_border = conn.generate_id()?;
+    conn.create_gc(gc_border, popup, &CreateGCAux::default().foreground(POPUP_BORDER))?;
+    let font = conn.generate_id()?;
+    conn.open_font(font, b"fixed")?;
+    let gc_text = conn.generate_id()?;
+    conn.create_gc(
+        gc_text,
+        popup,
+        &CreateGCAux::default()
+            .foreground(POPUP_FG)
+            .background(POPUP_BG)
+            .font(font),
+    )?;
+
+    conn.map_window(popup)?;
+
+    // Grab on the popup with owner_events=false so every click anywhere on
+    // the screen lands here. We then check root coords against the popup's
+    // rect to tell "click on Quit" from "click outside (dismiss)".
+    let _ = conn
+        .grab_pointer(
+            false,
+            popup,
+            EventMask::BUTTON_PRESS,
+            GrabMode::ASYNC,
+            GrabMode::ASYNC,
+            x11rb::NONE,
+            x11rb::NONE,
+            x11rb::CURRENT_TIME,
+        )?
+        .reply()?;
+    conn.flush()?;
+
+    let mut quit = false;
+    loop {
+        let ev = conn.wait_for_event()?;
+        match ev {
+            Event::Expose(e) if e.window == popup => {
+                conn.poly_fill_rectangle(
+                    popup,
+                    gc_bg,
+                    &[Rectangle { x: 0, y: 0, width: W, height: H }],
+                )?;
+                conn.poly_rectangle(
+                    popup,
+                    gc_border,
+                    &[Rectangle {
+                        x: 0,
+                        y: 0,
+                        width: W - 1,
+                        height: H - 1,
+                    }],
+                )?;
+                let label = b"Quit";
+                let text_w = label.len() as i16 * GLYPH_W;
+                let tx = (W as i16 - text_w) / 2;
+                let ty = (H as i16 + ASCENT) / 2;
+                conn.image_text8(popup, gc_text, tx, ty, label)?;
+                conn.flush()?;
+            }
+            Event::ButtonPress(e) => {
+                let inside = e.root_x >= x
+                    && e.root_x < x + W as i16
+                    && e.root_y >= y
+                    && e.root_y < y + H as i16;
+                if inside {
+                    quit = true;
+                }
+                break;
+            }
+            _ => {}
+        }
+    }
+
+    let _ = conn.ungrab_pointer(x11rb::CURRENT_TIME);
+    let _ = conn.destroy_window(popup);
+    let _ = conn.close_font(font);
+    conn.flush()?;
+
+    if quit {
+        tracing::info!("quit requested via tray menu");
+        std::process::exit(0);
+    }
+    Ok(())
 }
