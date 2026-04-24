@@ -2,6 +2,18 @@
 
 Fast Rust screenshot tool for Linux + X11 (i3-friendly). A from-scratch port of [Flameshot](https://github.com/flameshot-org/flameshot)'s core workflow: drag a region, annotate, save and/or copy to clipboard — driven by a long-running daemon so each PrintScreen is a fast IPC call instead of a cold binary start.
 
+- [Status](#status)
+- [Features](#features)
+- [Install](#install)
+- [Usage](#usage) — [daemon](#run-the-daemon) · [captures](#trigger-captures) · [shortcuts](#overlay-shortcuts)
+- [i3 setup](#i3-setup)
+- [systemd autostart](#systemd-autostart-alternative-to-i3-exec) — [troubleshooting](#troubleshooting)
+- [Configuration](#configuration)
+- [DBus interface](#dbus-interface)
+- [Architecture](#architecture)
+- [Build from source](#build-from-source)
+- [License](#license)
+
 ## Status
 
 - **Linux + X11 only.** Developed and tested on i3wm. No Wayland, no Windows, no macOS.
