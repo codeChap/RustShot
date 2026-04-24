@@ -1,5 +1,7 @@
 # RustShot
 
+![RustShot demo](docs/demo.gif)
+
 Fast Rust screenshot tool for Linux + X11 (i3-friendly). A from-scratch port of [Flameshot](https://github.com/flameshot-org/flameshot)'s core workflow: drag a region, annotate, save and/or copy to clipboard — driven by a long-running daemon so each PrintScreen is a fast IPC call instead of a cold binary start.
 
 - [Status](#status)
