@@ -222,7 +222,7 @@ pub fn submit_overlay(
         cursor_screen_ms = (t_screen - t0).as_millis() as u64,
         capture_ms = (t_capture - t_screen).as_millis() as u64,
         send_ms = (t_send - t_capture).as_millis() as u64,
-        "overlay submitted — eframe startup follows"
+        "overlay submitted — X11 window + composite follows"
     );
     Ok(resp_rx)
 }

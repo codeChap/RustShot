@@ -1,25 +1,38 @@
-//! Fullscreen overlay: region selection, annotation, and export.
+//! X11 overlay — override-redirect window, tiny-skia composite, XPutImage blit.
+//! Replaces the old eframe/egui overlay. Same `show(...)` signature so dbus
+//! and tray callers are unchanged.
 //!
-//! Submodules: `selection` (handle editing), `draft` (in-progress shapes),
-//! `preview` (live egui rendering), `convert` (tiny type conversions).
+//! Submodules: `state` (data), `paint` (render), `tool_buttons` (strip),
+//! `selection` (handles), `draft` (in-progress shapes), `x11_win` (X11 plumbing).
 
-mod convert;
 mod draft;
-mod preview;
+mod paint;
 mod selection;
+mod state;
 mod tool_buttons;
+mod x11_win;
 
-use crate::canvas::{render, Annotation, Bounds, Canvas, ToolKind};
+use crate::canvas::{Annotation, Bounds, Pos, ToolKind};
 use crate::config::Config;
-use crate::export;
 use crate::ui::UiResult;
-use convert::pos_from;
 use draft::Draft;
-use eframe::egui;
 use image::RgbaImage;
-use selection::{cursor_for_handle, draw_handles, handle_at, resize_rect, SelectionEdit};
+use selection::{cursor_glyph_for_handle, handle_at, resize_rect, SelectionEdit};
+use state::{Mode, OverlayState};
 use std::sync::Arc;
 use tokio::sync::oneshot;
+use tool_buttons::Hit;
+use x11rb::connection::Connection;
+use x11rb::protocol::xproto::KeyButMask;
+use x11rb::protocol::Event;
+use x11_win::{
+    X11Win, KS_1, KS_6, KS_C_LOWER, KS_ESCAPE, KS_KP_ENTER, KS_RETURN, KS_Y_LOWER, KS_Z_LOWER,
+    XC_CROSSHAIR, XC_FLEUR, XC_HAND1, XC_LEFT_PTR,
+};
+
+/// Click-vs-drag threshold in pixels squared. Motion below this on release
+/// counts as a click (used for Counter placement + strip clicks).
+const CLICK_SQ: f32 = 4.0 * 4.0;
 
 pub fn show(
     image: RgbaImage,
@@ -29,687 +42,401 @@ pub fn show(
     config: Arc<Config>,
     result_tx: oneshot::Sender<UiResult>,
 ) {
-    let t_show = std::time::Instant::now();
-    let mut result_tx = Some(result_tx);
+    let t0 = std::time::Instant::now();
+    let (w, h) = (image.width(), image.height());
 
-    let (sx, sy) = screen_origin;
-    let (img_w, img_h) = (image.width(), image.height());
-
-    let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_app_id("rustshot")
-            .with_title("rustshot-overlay")
-            .with_decorations(false)
-            .with_resizable(false)
-            .with_position([sx as f32, sy as f32])
-            .with_inner_size([img_w as f32, img_h as f32])
-            .with_window_level(egui::WindowLevel::AlwaysOnTop)
-            .with_fullscreen(true),
-        ..Default::default()
-    };
-
-    let _ = eframe::run_native(
-        "rustshot-overlay",
-        options,
-        Box::new(move |_cc| {
-            tracing::info!(
-                eframe_init_ms = t_show.elapsed().as_millis() as u64,
-                "overlay eframe ready (first paint imminent)"
-            );
-            Ok(Box::new(OverlayApp::new(
-                image,
-                save_path,
-                clipboard,
-                config,
-                result_tx.take().expect("eframe builds the app exactly once"),
-            )))
-        }),
-    );
-}
-
-/// Held across a drag so the handler doesn't flip mid-drag when `selection`
-/// transitions from None → Some.
-#[derive(Default, PartialEq, Eq)]
-enum Mode {
-    #[default]
-    SelectingRegion,
-    Annotating,
-}
-
-/// Fingerprint of a single committed Blur — used to detect changes without
-/// implementing Hash/Eq on the annotation type. f32-bit-pattern comparison is
-/// fine: the values come straight from drag state, no NaN/arith.
-type BlurKey = (u32, u32, u32, u32, u32);
-
-fn blur_key(b: Bounds, sigma: f32) -> BlurKey {
-    (
-        b.x.to_bits(),
-        b.y.to_bits(),
-        b.w.to_bits(),
-        b.h.to_bits(),
-        sigma.to_bits(),
-    )
-}
-
-struct OverlayApp {
-    image: RgbaImage,
-    save_path: String,
-    clipboard_pref: bool,
-    counter_radius: f32,
-    blur_sigma: f32,
-    /// `image` with all committed Blur annotations applied. Rebuilt only when
-    /// the blur list changes.
-    committed_base: Option<RgbaImage>,
-    committed_blur_sig: Vec<BlurKey>,
-    texture: Option<egui::TextureHandle>,
-    /// Small texture for the in-progress Blur draft. Rebuilt only when the
-    /// (bounds, sigma) key actually changes — egui repaints faster than the
-    /// pointer moves a pixel, so most frames during a drag are no-ops.
-    draft_blur_tex: Option<egui::TextureHandle>,
-    draft_blur_rect: Option<egui::Rect>,
-    draft_blur_sig: Option<BlurKey>,
-    mode: Mode,
-    selection: Option<egui::Rect>,
-    sel_drag_start: Option<egui::Pos2>,
-    selection_edit: SelectionEdit,
-    edit_drag_start: Option<egui::Pos2>,
-    edit_rect_start: Option<egui::Rect>,
-    draft: Option<Draft>,
-    canvas: Canvas,
-    /// Consumed on the first finish() / Drop. Option so we can `take()` it.
-    result_tx: Option<oneshot::Sender<UiResult>>,
-    /// Stays true until we've actually observed `focused=true` from winit.
-    /// i3+X11 racily ignores the first focus request when another overlay
-    /// just closed; re-requesting every frame until granted self-corrects.
-    needs_focus: bool,
-    pixels_per_point: f32,
-}
-
-impl OverlayApp {
-    fn new(
-        image: RgbaImage,
-        save_path: String,
-        clipboard: bool,
-        config: Arc<Config>,
-        result_tx: oneshot::Sender<UiResult>,
-    ) -> Self {
-        // Color and stroke width are deliberately hardcoded (red, 4px) — the
-        // overlay is keyboard-only, no in-overlay color/width controls. Take
-        // them straight from `Canvas::default()`.
-        let canvas = Canvas::default();
-        Self {
-            image,
-            save_path,
-            clipboard_pref: clipboard,
-            counter_radius: config.defaults.counter_radius.max(4.0),
-            blur_sigma: config.defaults.blur_sigma.max(0.5),
-            committed_base: None,
-            committed_blur_sig: Vec::new(),
-            texture: None,
-            draft_blur_tex: None,
-            draft_blur_rect: None,
-            draft_blur_sig: None,
-            mode: Mode::default(),
-            selection: None,
-            sel_drag_start: None,
-            selection_edit: SelectionEdit::None,
-            edit_drag_start: None,
-            edit_rect_start: None,
-            draft: None,
-            canvas,
-            result_tx: Some(result_tx),
-            needs_focus: true,
-            pixels_per_point: 1.0,
-        }
-    }
-
-    fn finish(&mut self, value: UiResult, ctx: &egui::Context) {
-        if let Some(tx) = self.result_tx.take() {
-            let _ = tx.send(value);
-        }
-        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-    }
-
-    /// Apply annotations onto a working copy, crop to selection if present.
-    /// Reuses `committed_base` (which already has every Blur baked in by
-    /// `refresh_base_texture`) so Save doesn't re-run Gaussian blur on a 4K
-    /// frame. Falls back to a fresh blur pass if the cache hasn't been built
-    /// yet (shouldn't happen — update() rebuilds it before any act()).
-    fn compose(&self) -> RgbaImage {
-        let (mut working, blurs_baked) = match self.committed_base.as_ref() {
-            Some(b) => (b.clone(), true),
-            None => (self.image.clone(), false),
-        };
-        if !blurs_baked {
-            render::apply_blurs(&mut working, &self.canvas.annotations);
-        }
-        render::rasterize_overlays(&mut working, &self.canvas.annotations);
-        if let Some(sel) = self.selection {
-            let (x, y, w, h) = clamp_to_image(sel, self.image.width(), self.image.height());
-            if w > 0 && h > 0 {
-                return image::imageops::crop_imm(&working, x, y, w, h).to_image();
-            }
-        }
-        working
-    }
-
-    /// Save to disk (if a path is set) and/or copy to clipboard.
-    /// `force_copy` = triggered by Copy action; otherwise we copy only
-    /// when the user passed `-c`.
-    fn act(&mut self, force_copy: bool) -> UiResult {
-        let img = self.compose();
-        if !self.save_path.is_empty() {
-            match export::file::save_png(&img, std::path::Path::new(&self.save_path)) {
-                Ok(()) => tracing::info!(
-                    path = %self.save_path, w = img.width(), h = img.height(), "saved"
-                ),
-                Err(e) => tracing::error!("save failed: {e}"),
-            }
-        }
-        if self.clipboard_pref || force_copy {
-            if let Err(e) = export::clipboard::copy(&img) {
-                tracing::error!("clipboard copy failed: {e}");
-            } else {
-                tracing::info!(w = img.width(), h = img.height(), "copied to clipboard");
-            }
-        }
-        UiResult::Done
-    }
-}
-
-impl Drop for OverlayApp {
-    /// If eframe tears down the window without finish() being hit (e.g. WM
-    /// kills the process), make sure the caller's oneshot resolves rather
-    /// than dangling forever. Treat it as a cancel.
-    fn drop(&mut self) {
-        if let Some(tx) = self.result_tx.take() {
-            let _ = tx.send(UiResult::Cancelled);
-        }
-    }
-}
-
-impl eframe::App for OverlayApp {
-    fn clear_color(&self, _: &egui::Visuals) -> [f32; 4] {
-        [0.0, 0.0, 0.0, 1.0]
-    }
-
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        self.pixels_per_point = ctx.pixels_per_point();
-        if self.needs_focus {
-            if ctx.input(|i| i.focused) {
-                self.needs_focus = false;
-            } else {
-                ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
-                ctx.request_repaint();
-            }
-        }
-
-        refresh_base_texture(self, ctx);
-        refresh_draft_blur(self, ctx);
-
-        let k = Keys::read(ctx);
-        if let Some(result) = self.process_input(&k) {
-            self.finish(result, ctx);
+    let mut win = match X11Win::new(screen_origin, w as u16, h as u16) {
+        Ok(w) => w,
+        Err(e) => {
+            tracing::error!("X11 overlay window creation failed: {e}");
+            let _ = result_tx.send(UiResult::Cancelled);
             return;
         }
+    };
 
-        egui::CentralPanel::default()
-            .frame(egui::Frame::none().fill(egui::Color32::BLACK))
-            .show(ctx, |ui| {
-                self.render_overlay(ui);
-            });
-
-        // Only keep repainting while something is animating.
-        if self.draft.is_some()
-            || self.sel_drag_start.is_some()
-            || self.selection_edit != SelectionEdit::None
-        {
-            ctx.request_repaint();
-        }
+    if let Err(e) = win.map_and_grab() {
+        tracing::error!("X11 map_and_grab: {e}");
+        let _ = result_tx.send(UiResult::Cancelled);
+        return;
     }
-}
+    let _ = win.set_cursor(XC_CROSSHAIR);
 
-impl OverlayApp {
-    fn process_input(&mut self, k: &Keys) -> Option<UiResult> {
-        if k.esc {
-            return Some(UiResult::Cancelled);
-        }
-        if k.ctrl_z { self.canvas.undo(); }
-        if k.ctrl_y { self.canvas.redo(); }
-        if k.enter {
-            return Some(self.act(false));
-        }
-        if k.ctrl_c {
-            return Some(self.act(true));
-        }
-        if let Some(t) = k.tool_swap {
-            self.canvas.tool = t;
-        }
-        None
-    }
+    tracing::info!(
+        setup_ms = t0.elapsed().as_millis() as u64,
+        w, h,
+        "overlay window ready"
+    );
 
-    fn render_overlay(&mut self, ui: &mut egui::Ui) {
-        let screen_rect = ui.max_rect();
-        let response = ui.interact(
-            screen_rect,
-            egui::Id::new("rustshot-overlay-canvas"),
-            egui::Sense::click_and_drag(),
-        );
+    let mut state = OverlayState::new(image, save_path, clipboard, config);
+    let mut display = RgbaImage::new(w, h);
+    let mut dragging = Dragging::None;
+    let mut press_pos = Pos { x: 0.0, y: 0.0 };
+    let mut last_cursor = XC_CROSSHAIR;
 
-        match self.mode {
-            Mode::SelectingRegion => handle_region_drag(self, &response),
-            Mode::Annotating => {
-                let ctx = ui.ctx().clone();
-                handle_tool_input(self, &response, &ctx);
+    // First paint.
+    let mut dirty = true;
+    let mut last_motion: Option<Pos> = None;
+    let result = loop {
+        if dirty {
+            // If the last thing we saw was a motion, apply its effects now —
+            // we deferred per-motion work while draining so repaint isn't 1:1
+            // with event count.
+            if let Some(p) = last_motion.take() {
+                on_motion(&mut state, &mut dragging, p);
+                let desired = pick_cursor(&state, &dragging, p);
+                if desired != last_cursor {
+                    let _ = win.set_cursor(desired);
+                    last_cursor = desired;
+                }
             }
-        }
-
-        ui.ctx().set_cursor_icon(pick_cursor(self, &response, ui.ctx()));
-
-        let painter = ui.painter();
-        let texture_id = self.texture.as_ref().unwrap().id();
-        
-        painter.image(
-            texture_id,
-            screen_rect,
-            egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
-            egui::Color32::WHITE,
-        );
-
-        if let (Some(tex), Some(rect)) = (self.draft_blur_tex.as_ref(), self.draft_blur_rect) {
-            painter.image(
-                tex.id(),
-                rect,
-                egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
-                egui::Color32::WHITE,
-            );
-        }
-
-        let dim = egui::Color32::from_black_alpha(128);
-        if let Some(sel) = self.selection {
-            paint_dim_around(painter, screen_rect, sel, dim);
-            painter.rect_stroke(
-                sel,
-                0.0,
-                egui::Stroke::new(2.0, egui::Color32::from_rgb(255, 200, 0)),
-            );
-            draw_handles(painter, sel);
-        } else {
-            painter.rect_filled(screen_rect, 0.0, dim);
-            painter.text(
-                screen_rect.center(),
-                egui::Align2::CENTER_CENTER,
-                "drag to select a region  -  Enter saves full screen  -  Esc cancels",
-                egui::FontId::proportional(18.0),
-                egui::Color32::from_white_alpha(220),
-            );
-        }
-
-        preview::draw_annotations(painter, &self.canvas.annotations);
-        if let Some(d) = &self.draft {
-            preview::draw_draft(painter, d);
-        }
-
-        if let Some(sel) = self.selection {
-            let strip = tool_buttons::strip_rect(screen_rect, sel);
-            let ctx = ui.ctx().clone();
-            if let Some(a) = tool_buttons::show(ui, strip, &mut self.canvas.tool) {
-                let r = match a {
-                    tool_buttons::Action::Save => self.act(false),
-                    tool_buttons::Action::Copy => self.act(true),
-                };
-                self.finish(r, &ctx);
+            state.refresh_base();
+            state.refresh_draft_blur();
+            paint::composite(&mut display, &state);
+            if let Err(e) = win.blit_rgba(display.as_raw()) {
+                tracing::error!("blit failed: {e}");
+                break UiResult::Cancelled;
             }
+            dirty = false;
         }
-    }
-}
 
-/// Per-frame keyboard snapshot. Reading the input once keeps the borrow on
-/// `ctx` small and the dispatch tidy.
-struct Keys {
-    esc: bool,
-    enter: bool,
-    ctrl_c: bool,
-    ctrl_z: bool,
-    ctrl_y: bool,
-    tool_swap: Option<ToolKind>,
-}
-
-impl Keys {
-    fn read(ctx: &egui::Context) -> Self {
-        ctx.input(|i| Self {
-            esc: i.key_pressed(egui::Key::Escape),
-            enter: i.key_pressed(egui::Key::Enter),
-            ctrl_c: i.modifiers.ctrl && i.key_pressed(egui::Key::C),
-            ctrl_z: i.modifiers.ctrl && i.key_pressed(egui::Key::Z),
-            ctrl_y: i.modifiers.ctrl && i.key_pressed(egui::Key::Y),
-            tool_swap: tool_from_numkey(i),
-        })
-    }
-}
-
-fn tool_from_numkey(i: &egui::InputState) -> Option<ToolKind> {
-    if i.key_pressed(egui::Key::Num1) { return Some(ToolKind::Pencil); }
-    if i.key_pressed(egui::Key::Num2) { return Some(ToolKind::Arrow); }
-    if i.key_pressed(egui::Key::Num3) { return Some(ToolKind::Rect); }
-    if i.key_pressed(egui::Key::Num4) { return Some(ToolKind::Ellipse); }
-    if i.key_pressed(egui::Key::Num5) { return Some(ToolKind::Blur); }
-    if i.key_pressed(egui::Key::Num6) { return Some(ToolKind::Counter); }
-    None
-}
-
-fn handle_region_drag(app: &mut OverlayApp, response: &egui::Response) {
-    if response.drag_started() {
-        app.sel_drag_start = response.interact_pointer_pos();
-        app.selection = None;
-    }
-    if response.dragged() {
-        if let (Some(start), Some(now)) = (app.sel_drag_start, response.interact_pointer_pos()) {
-            app.selection = Some(egui::Rect::from_two_pos(start, now));
-        }
-    }
-    if response.drag_stopped() {
-        if let Some(sel) = app.selection {
-            if sel.width() >= 4.0 && sel.height() >= 4.0 {
-                app.mode = Mode::Annotating;
-            } else {
-                app.selection = None;
+        // Wait for the next event, then drain the queue before painting again.
+        // This collapses a burst of MotionNotify into one repaint.
+        let first = match win.conn.wait_for_event() {
+            Ok(ev) => ev,
+            Err(e) => {
+                tracing::error!("X11 wait_for_event: {e}");
+                break UiResult::Cancelled;
             }
-        }
-    }
-}
-
-fn handle_tool_input(app: &mut OverlayApp, response: &egui::Response, ctx: &egui::Context) {
-    let style = app.canvas.style;
-    let tool = app.canvas.tool;
-    let pointer = response.interact_pointer_pos();
-
-    if response.drag_started() {
-        app.selection_edit = SelectionEdit::None;
-        // egui's drag threshold means `pointer` has already drifted a few px from
-        // the press point — use the actual press origin for handle hit-testing so
-        // edge grabs (EDGE_HIT = 8px) aren't lost to that drift.
-        let press = ctx.input(|i| i.pointer.press_origin()).or(pointer);
-        if let (Some(sel), Some(p)) = (app.selection, press) {
-            if let Some(h) = handle_at(sel, p) {
-                app.selection_edit = SelectionEdit::Resizing(h);
-                app.edit_drag_start = Some(p);
-                app.edit_rect_start = Some(sel);
-            } else if ctx.input(|i| i.modifiers.ctrl) && sel.contains(p) {
-                app.selection_edit = SelectionEdit::Moving;
-                app.edit_drag_start = Some(p);
-                app.edit_rect_start = Some(sel);
-            }
-        }
-
-        if app.selection_edit == SelectionEdit::None {
-            if let (Some(p), Some(sel)) = (press, app.selection) {
-                if sel.contains(p) {
-                    app.draft = Draft::new(tool, pos_from(p), style, app.blur_sigma);
+        };
+        let mut events: Vec<Event> = Vec::with_capacity(8);
+        events.push(first);
+        loop {
+            match win.conn.poll_for_event() {
+                Ok(Some(ev)) => events.push(ev),
+                Ok(None) => break,
+                Err(e) => {
+                    tracing::error!("X11 poll_for_event: {e}");
+                    break;
                 }
             }
         }
-    }
 
-    if response.dragged() {
-        match app.selection_edit {
-            SelectionEdit::Resizing(h) => {
-                if let (Some(p), Some(start), Some(rect)) =
-                    (pointer, app.edit_drag_start, app.edit_rect_start)
-                {
-                    app.selection = Some(resize_rect(rect, h, p - start));
-                }
-            }
-            SelectionEdit::Moving => {
-                if let (Some(p), Some(start), Some(rect)) =
-                    (pointer, app.edit_drag_start, app.edit_rect_start)
-                {
-                    app.selection = Some(rect.translate(p - start));
-                }
-            }
-            SelectionEdit::None => {
-                if let (Some(p), Some(d), Some(sel)) =
-                    (pointer, app.draft.as_mut(), app.selection)
-                {
-                    d.extend(pos_from(sel.clamp(p)));
-                }
-            }
-        }
-    }
-
-    if response.drag_stopped() {
-        match app.selection_edit {
-            SelectionEdit::None => {
-                if let Some(d) = app.draft.take() {
-                    if let Some(a) = d.finalize() {
-                        app.canvas.push(a);
+        let mut finish: Option<UiResult> = None;
+        for ev in events {
+            match ev {
+                Event::Expose(_) => dirty = true,
+                Event::KeyPress(e) => {
+                    if let Some(res) = handle_key(&mut state, &win, e.detail, u16::from(e.state)) {
+                        finish = Some(res);
+                        break;
                     }
+                    state.ctrl_down = u16::from(e.state) & u16::from(KeyButMask::CONTROL) != 0;
+                    dirty = true;
                 }
+                Event::KeyRelease(e) => {
+                    state.ctrl_down = u16::from(e.state) & u16::from(KeyButMask::CONTROL) != 0;
+                }
+                Event::ButtonPress(e) if e.detail == 1 => {
+                    // Apply any pending motion first so press-time state is correct.
+                    if let Some(p) = last_motion.take() {
+                        on_motion(&mut state, &mut dragging, p);
+                    }
+                    let p = Pos { x: e.event_x as f32, y: e.event_y as f32 };
+                    press_pos = p;
+                    state.ctrl_down = u16::from(e.state) & u16::from(KeyButMask::CONTROL) != 0;
+                    dragging = on_press(&mut state, p);
+                    dirty = true;
+                }
+                Event::MotionNotify(e) => {
+                    let p = Pos { x: e.event_x as f32, y: e.event_y as f32 };
+                    state.ctrl_down = u16::from(e.state) & u16::from(KeyButMask::CONTROL) != 0;
+                    last_motion = Some(p);
+                    dirty = true;
+                }
+                Event::ButtonRelease(e) if e.detail == 1 => {
+                    if let Some(p) = last_motion.take() {
+                        on_motion(&mut state, &mut dragging, p);
+                    }
+                    let p = Pos { x: e.event_x as f32, y: e.event_y as f32 };
+                    state.ctrl_down = u16::from(e.state) & u16::from(KeyButMask::CONTROL) != 0;
+                    if let Some(res) = on_release(&mut state, &mut dragging, p, press_pos) {
+                        finish = Some(res);
+                        break;
+                    }
+                    dirty = true;
+                }
+                _ => {}
             }
-            _ => {
-                app.selection_edit = SelectionEdit::None;
-                app.edit_drag_start = None;
-                app.edit_rect_start = None;
+        }
+        if let Some(r) = finish {
+            break r;
+        }
+    };
+
+    let _ = result_tx.send(result);
+    tracing::info!(
+        total_ms = t0.elapsed().as_millis() as u64,
+        "overlay closed"
+    );
+    drop(win);
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Dragging {
+    None,
+    Region,
+    Draft,
+    EditResize,
+    EditMove,
+    Strip(Hit),
+}
+
+fn on_press(state: &mut OverlayState, p: Pos) -> Dragging {
+    // Strip click takes priority if selection is shown.
+    if let Some(sel) = state.selection {
+        let strip = tool_buttons::strip_rect(state.base.width(), state.base.height(), sel);
+        if tool_buttons::contains(strip, p) {
+            if let Some(hit) = tool_buttons::hit(strip, p) {
+                return Dragging::Strip(hit);
             }
+            // Inside strip but between buttons — eat the click, no drag.
+            return Dragging::None;
         }
     }
 
-    if app.selection_edit == SelectionEdit::None
-        && tool == ToolKind::Counter
-        && response.clicked()
-    {
-        if let (Some(p), Some(sel)) = (pointer, app.selection) {
-            if sel.contains(p) {
-                let n = app.canvas.next_counter();
-                app.canvas.push(Annotation::Counter {
-                    center: pos_from(p),
+    match state.mode {
+        Mode::SelectingRegion => {
+            state.sel_drag_start = Some(p);
+            state.selection = None;
+            Dragging::Region
+        }
+        Mode::Annotating => {
+            let Some(sel) = state.selection else {
+                return Dragging::None;
+            };
+
+            // Handle hit?
+            if let Some(h) = handle_at(sel, p) {
+                state.selection_edit = SelectionEdit::Resizing(h);
+                state.edit_drag_start = Some(p);
+                state.edit_rect_start = Some(sel);
+                return Dragging::EditResize;
+            }
+            // Ctrl+inside = move
+            if state.ctrl_down && bounds_contains(sel, p) {
+                state.selection_edit = SelectionEdit::Moving;
+                state.edit_drag_start = Some(p);
+                state.edit_rect_start = Some(sel);
+                return Dragging::EditMove;
+            }
+            // Counter: click-to-place, no drag.
+            if state.canvas.tool == ToolKind::Counter && bounds_contains(sel, p) {
+                let n = state.canvas.next_counter();
+                state.canvas.push(Annotation::Counter {
+                    center: p,
                     number: n,
-                    color: style.color,
-                    radius: app.counter_radius,
+                    color: state.canvas.style.color,
+                    radius: state.counter_radius,
+                });
+                return Dragging::None;
+            }
+            // Start an annotation draft.
+            if bounds_contains(sel, p) {
+                state.draft = Draft::new(state.canvas.tool, p, state.canvas.style, state.blur_sigma);
+                Dragging::Draft
+            } else {
+                Dragging::None
+            }
+        }
+    }
+}
+
+fn on_motion(state: &mut OverlayState, dragging: &mut Dragging, p: Pos) {
+    // Always update strip hover so buttons light up on hover, even outside a drag.
+    state.strip_hover = match state.selection {
+        Some(sel) => {
+            let strip = tool_buttons::strip_rect(state.base.width(), state.base.height(), sel);
+            if tool_buttons::contains(strip, p) {
+                tool_buttons::hit(strip, p)
+            } else {
+                None
+            }
+        }
+        None => None,
+    };
+
+    match *dragging {
+        Dragging::Region => {
+            if let Some(start) = state.sel_drag_start {
+                state.selection = Some(Bounds::from_two(start, p));
+            }
+        }
+        Dragging::Draft => {
+            if let (Some(draft), Some(sel)) = (state.draft.as_mut(), state.selection) {
+                draft.extend(clamp_to_bounds(p, sel));
+            }
+        }
+        Dragging::EditResize => {
+            if let (SelectionEdit::Resizing(h), Some(start), Some(rect)) =
+                (state.selection_edit, state.edit_drag_start, state.edit_rect_start)
+            {
+                let dx = p.x - start.x;
+                let dy = p.y - start.y;
+                state.selection = Some(resize_rect(rect, h, dx, dy));
+            }
+        }
+        Dragging::EditMove => {
+            if let (Some(start), Some(rect)) = (state.edit_drag_start, state.edit_rect_start) {
+                let dx = p.x - start.x;
+                let dy = p.y - start.y;
+                state.selection = Some(Bounds {
+                    x: rect.x + dx,
+                    y: rect.y + dy,
+                    w: rect.w,
+                    h: rect.h,
                 });
             }
         }
+        Dragging::None | Dragging::Strip(_) => {}
     }
 }
 
-fn pick_cursor(
-    app: &OverlayApp,
-    response: &egui::Response,
-    ctx: &egui::Context,
-) -> egui::CursorIcon {
-    match app.selection_edit {
-        SelectionEdit::Resizing(h) => return cursor_for_handle(h),
-        SelectionEdit::Moving => return egui::CursorIcon::Grabbing,
-        SelectionEdit::None => {}
-    }
-    let Some(hover) = response.hover_pos() else {
-        return egui::CursorIcon::Crosshair;
-    };
-    let Some(sel) = app.selection else {
-        return egui::CursorIcon::Crosshair;
-    };
-    if let Some(h) = handle_at(sel, hover) {
-        return cursor_for_handle(h);
-    }
-    if sel.contains(hover) {
-        if ctx.input(|i| i.modifiers.ctrl) {
-            egui::CursorIcon::Grab
-        } else {
-            egui::CursorIcon::Crosshair
-        }
-    } else {
-        egui::CursorIcon::Default
-    }
-}
+fn on_release(
+    state: &mut OverlayState,
+    dragging: &mut Dragging,
+    p: Pos,
+    press: Pos,
+) -> Option<UiResult> {
+    let d = *dragging;
+    *dragging = Dragging::None;
 
-fn paint_dim_around(
-    painter: &egui::Painter,
-    screen: egui::Rect,
-    sel: egui::Rect,
-    dim: egui::Color32,
-) {
-    let sel = sel.intersect(screen);
-    let top = egui::Rect::from_min_max(screen.left_top(), egui::pos2(screen.right(), sel.top()));
-    let bottom = egui::Rect::from_min_max(
-        egui::pos2(screen.left(), sel.bottom()),
-        screen.right_bottom(),
-    );
-    let left = egui::Rect::from_min_max(
-        egui::pos2(screen.left(), sel.top()),
-        egui::pos2(sel.left(), sel.bottom()),
-    );
-    let right = egui::Rect::from_min_max(
-        egui::pos2(sel.right(), sel.top()),
-        egui::pos2(screen.right(), sel.bottom()),
-    );
-    for r in [top, bottom, left, right] {
-        if r.width() > 0.0 && r.height() > 0.0 {
-            painter.rect_filled(r, 0.0, dim);
-        }
-    }
-}
-
-/// Rebuild `texture` (and `committed_base`) whenever the committed Blur list
-/// changes. Non-blur annotations stay as egui primitives drawn in preview.
-///
-/// Fast path: when the new sig is the old sig plus one new entry at the end
-/// (the common case — user commits one more Blur), blur only the new region
-/// into the existing `committed_base` instead of rebuilding from scratch.
-/// Undo / non-append changes still trigger a full rebuild.
-fn refresh_base_texture(app: &mut OverlayApp, ctx: &egui::Context) {
-    let current: Vec<BlurKey> = app
-        .canvas
-        .annotations
-        .iter()
-        .filter_map(|a| match a {
-            Annotation::Blur { rect, sigma } => Some(blur_key(*rect, *sigma)),
-            _ => None,
-        })
-        .collect();
-
-    if app.texture.is_some() && app.committed_blur_sig == current {
-        return;
-    }
-
-    let can_append = app.committed_base.is_some()
-        && current.len() == app.committed_blur_sig.len() + 1
-        && current.starts_with(&app.committed_blur_sig);
-
-    if can_append {
-        // The last Blur annotation is the one that produced the new entry.
-        if let Some((rect, sigma)) = app
-            .canvas
-            .annotations
-            .iter()
-            .rev()
-            .find_map(|a| match a {
-                Annotation::Blur { rect, sigma } => Some((*rect, *sigma)),
-                _ => None,
-            })
-        {
-            let base = app.committed_base.as_mut().unwrap();
-            if let Some((x, y, blurred)) = render::blur_crop(base, rect, sigma) {
-                image::imageops::replace(base, &blurred, x as i64, y as i64);
+    match d {
+        Dragging::Region => {
+            if let Some(sel) = state.selection {
+                if sel.w >= 4.0 && sel.h >= 4.0 {
+                    state.mode = Mode::Annotating;
+                } else {
+                    state.selection = None;
+                }
             }
-            upload_base_texture(app, ctx);
-            app.committed_blur_sig = current;
-            return;
+            state.sel_drag_start = None;
         }
-    }
-
-    let mut base = app.image.clone();
-    for a in &app.canvas.annotations {
-        if let Annotation::Blur { rect, sigma } = a {
-            if let Some((x, y, blurred)) = render::blur_crop(&base, *rect, *sigma) {
-                image::imageops::replace(&mut base, &blurred, x as i64, y as i64);
+        Dragging::Draft => {
+            if let Some(draft) = state.draft.take() {
+                if let Some(a) = draft.finalize() {
+                    state.canvas.push(a);
+                }
             }
         }
+        Dragging::EditResize | Dragging::EditMove => {
+            state.selection_edit = SelectionEdit::None;
+            state.edit_drag_start = None;
+            state.edit_rect_start = None;
+        }
+        Dragging::Strip(hit) => {
+            // Only trigger if release is still on the same button AND travel < CLICK_SQ.
+            let dx = p.x - press.x;
+            let dy = p.y - press.y;
+            if dx * dx + dy * dy < CLICK_SQ {
+                if let Some(sel) = state.selection {
+                    let strip =
+                        tool_buttons::strip_rect(state.base.width(), state.base.height(), sel);
+                    if tool_buttons::hit(strip, p) == Some(hit) {
+                        return apply_hit(state, hit);
+                    }
+                }
+            }
+        }
+        Dragging::None => {}
     }
-    app.committed_base = Some(base);
-    upload_base_texture(app, ctx);
-    app.committed_blur_sig = current;
+    None
 }
 
-fn upload_base_texture(app: &mut OverlayApp, ctx: &egui::Context) {
-    let base = app
-        .committed_base
-        .as_ref()
-        .expect("committed_base set before upload");
-    let size = [base.width() as usize, base.height() as usize];
-    let img = egui::ColorImage::from_rgba_unmultiplied(size, base.as_raw());
-    match app.texture.as_mut() {
-        Some(h) => h.set(img, egui::TextureOptions::LINEAR),
-        None => {
-            app.texture = Some(ctx.load_texture("base", img, egui::TextureOptions::LINEAR));
+fn apply_hit(state: &mut OverlayState, hit: Hit) -> Option<UiResult> {
+    match hit {
+        Hit::Tool(t) => {
+            state.canvas.tool = t;
+            None
+        }
+        Hit::Save => Some(state.act(false)),
+        Hit::Copy => Some(state.act(true)),
+    }
+}
+
+fn handle_key(
+    state: &mut OverlayState,
+    win: &X11Win,
+    keycode: u8,
+    state_mask: u16,
+) -> Option<UiResult> {
+    let ks = win.keysym(keycode);
+    let ctrl = state_mask & u16::from(KeyButMask::CONTROL) != 0;
+
+    match ks {
+        KS_ESCAPE => return Some(UiResult::Cancelled),
+        KS_RETURN | KS_KP_ENTER => return Some(state.act(false)),
+        _ => {}
+    }
+
+    if ctrl {
+        match ks {
+            KS_C_LOWER => return Some(state.act(true)),
+            KS_Z_LOWER => state.canvas.undo(),
+            KS_Y_LOWER => state.canvas.redo(),
+            _ => {}
+        }
+        return None;
+    }
+
+    if (KS_1..=KS_6).contains(&ks) {
+        let idx = (ks - KS_1) as usize;
+        if let Some(&t) = ToolKind::ALL.get(idx) {
+            state.canvas.tool = t;
         }
     }
+    None
 }
 
-/// Update the small draft-blur texture so the in-progress Blur shows the
-/// real blur effect (not a placeholder). Blurs off `committed_base` so a
-/// draft over an existing blur composites correctly.
-fn refresh_draft_blur(app: &mut OverlayApp, ctx: &egui::Context) {
-    let Some(Draft::Blur { start, end, sigma }) = app.draft.as_ref() else {
-        app.draft_blur_tex = None;
-        app.draft_blur_rect = None;
-        app.draft_blur_sig = None;
-        return;
-    };
-
-    let x0 = start.x.min(end.x);
-    let y0 = start.y.min(end.y);
-    let x1 = start.x.max(end.x);
-    let y1 = start.y.max(end.y);
-    if x1 - x0 < 2.0 || y1 - y0 < 2.0 {
-        app.draft_blur_tex = None;
-        app.draft_blur_rect = None;
-        app.draft_blur_sig = None;
-        return;
-    }
-
-    let bounds = Bounds {
-        x: x0,
-        y: y0,
-        w: x1 - x0,
-        h: y1 - y0,
-    };
-    // Skip the gaussian if neither bounds nor sigma changed since the last
-    // build. egui drives update() far faster than the pointer moves a pixel,
-    // so this is the difference between blurring every frame and blurring
-    // only when something actually changed.
-    let key = blur_key(bounds, *sigma);
-    if app.draft_blur_sig == Some(key) && app.draft_blur_tex.is_some() {
-        return;
-    }
-
-    let src = app.committed_base.as_ref().unwrap_or(&app.image);
-    let Some((x, y, blurred)) = render::blur_crop(src, bounds, *sigma) else {
-        app.draft_blur_tex = None;
-        app.draft_blur_rect = None;
-        app.draft_blur_sig = None;
-        return;
-    };
-
-    let size = [blurred.width() as usize, blurred.height() as usize];
-    let cimg = egui::ColorImage::from_rgba_unmultiplied(size, blurred.as_raw());
-    match app.draft_blur_tex.as_mut() {
-        Some(h) => h.set(cimg, egui::TextureOptions::LINEAR),
-        None => {
-            app.draft_blur_tex =
-                Some(ctx.load_texture("rs-draft-blur", cimg, egui::TextureOptions::LINEAR));
+fn pick_cursor(state: &OverlayState, dragging: &Dragging, p: Pos) -> u16 {
+    // Active drag: resize cursor sticks through the drag.
+    if let Dragging::EditResize = dragging {
+        if let SelectionEdit::Resizing(h) = state.selection_edit {
+            return cursor_glyph_for_handle(h);
         }
     }
-    app.draft_blur_rect = Some(egui::Rect::from_min_max(
-        egui::pos2(x as f32, y as f32),
-        egui::pos2((x + blurred.width()) as f32, (y + blurred.height()) as f32),
-    ));
-    app.draft_blur_sig = Some(key);
+    if let Dragging::EditMove = dragging {
+        return XC_FLEUR;
+    }
+    // Strip hover: pointing hand.
+    if state.strip_hover.is_some() {
+        return XC_HAND1;
+    }
+    match state.selection {
+        Some(sel) => {
+            if let Some(h) = handle_at(sel, p) {
+                cursor_glyph_for_handle(h)
+            } else if bounds_contains(sel, p) {
+                if state.ctrl_down {
+                    XC_FLEUR
+                } else {
+                    XC_CROSSHAIR
+                }
+            } else {
+                XC_LEFT_PTR
+            }
+        }
+        None => XC_CROSSHAIR,
+    }
 }
 
-fn clamp_to_image(sel: egui::Rect, max_w: u32, max_h: u32) -> (u32, u32, u32, u32) {
-    let l = sel.left().max(0.0).min(max_w as f32) as u32;
-    let t = sel.top().max(0.0).min(max_h as f32) as u32;
-    let r = sel.right().max(0.0).min(max_w as f32) as u32;
-    let b = sel.bottom().max(0.0).min(max_h as f32) as u32;
-    (l, t, r.saturating_sub(l), b.saturating_sub(t))
+fn bounds_contains(b: Bounds, p: Pos) -> bool {
+    p.x >= b.x && p.x <= b.x + b.w && p.y >= b.y && p.y <= b.y + b.h
 }
+
+fn clamp_to_bounds(p: Pos, b: Bounds) -> Pos {
+    Pos {
+        x: p.x.max(b.x).min(b.x + b.w),
+        y: p.y.max(b.y).min(b.y + b.h),
+    }
+}
+

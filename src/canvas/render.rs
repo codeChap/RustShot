@@ -7,7 +7,7 @@ use tiny_skia::{
 
 const FONT_BYTES: &[u8] = include_bytes!("../../assets/font.ttf");
 
-fn font() -> &'static FontRef<'static> {
+pub(crate) fn font() -> &'static FontRef<'static> {
     static FONT: std::sync::OnceLock<FontRef<'static>> = std::sync::OnceLock::new();
     FONT.get_or_init(|| {
         FontRef::try_from_slice(FONT_BYTES).expect("embedded font is valid TTF")
