@@ -240,6 +240,18 @@ fn on_press(state: &mut OverlayState, p: Pos) -> Dragging {
                 });
                 return Dragging::None;
             }
+            // Stamp tools (!, ?, *): click-to-place bare glyph.
+            if let Some(ch) = state.canvas.tool.and_then(ToolKind::stamp_char) {
+                if bounds_contains(sel, p) {
+                    state.canvas.push(Annotation::Stamp {
+                        center: p,
+                        ch,
+                        color: state.canvas.style.color,
+                        size: state.counter_radius * 2.0,
+                    });
+                }
+                return Dragging::None;
+            }
             // Start an annotation draft.
             if let Some(tool) = state.canvas.tool {
                 if bounds_contains(sel, p) {

@@ -33,7 +33,11 @@ impl Draft {
             ToolKind::Rect => Draft::Rect { start: pos, end: pos, style },
             ToolKind::Ellipse => Draft::Ellipse { start: pos, end: pos, style },
             ToolKind::Pixelate => Draft::Pixelate { start: pos, end: pos, block: pixelate_block },
-            ToolKind::Counter => return None,
+            // Click-to-place tools — placement happens in on_press, no drag draft.
+            ToolKind::Counter
+            | ToolKind::Exclaim
+            | ToolKind::Question
+            | ToolKind::Asterisk => return None,
         })
     }
 

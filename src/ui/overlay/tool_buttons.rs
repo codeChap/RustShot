@@ -132,35 +132,38 @@ pub(super) fn paint(
         });
     }
 
-    // Text pass — counter "1" glyph. Only the Counter button has text.
-    paint_counter_label(display, strip, active, hover);
+    // Text pass — char glyphs for tools whose button is rendered as text
+    // (Counter "1" and the bare-stamp tools !, ?, *).
+    paint_text_labels(display, strip, active);
 }
 
-fn paint_counter_label(
-    display: &mut RgbaImage,
-    strip: Bounds,
-    active: Option<ToolKind>,
-    hover: Option<Hit>,
-) {
-    // Find the Counter button x position.
-    let counter_idx = ToolKind::ALL
-        .iter()
-        .position(|&t| t == ToolKind::Counter)
-        .unwrap_or(0) as f32;
-    let bx = strip.x + PAD + counter_idx * (BUTTON_D + GAP);
+fn paint_text_labels(display: &mut RgbaImage, strip: Bounds, active: Option<ToolKind>) {
     let by = strip.y + PAD;
-    let is_active = active == Some(ToolKind::Counter);
-    let fg = if is_active {
-        Rgba([0, 0, 0, 255])
-    } else {
-        Rgba([255, 255, 255, 255])
-    };
-    let _ = hover; // hover doesn't change the glyph
-    let scale = PxScale::from(BUTTON_D * 0.42);
-    let (tw, th) = imageproc::drawing::text_size(scale, render::font(), "1");
-    let tx = (bx + BUTTON_D * 0.5 - tw as f32 * 0.5) as i32;
-    let ty = (by + BUTTON_D * 0.5 - th as f32 * 0.5) as i32;
-    imageproc::drawing::draw_text_mut(display, fg, tx, ty, scale, render::font(), "1");
+    let font = render::font();
+    for (idx, &tool) in ToolKind::ALL.iter().enumerate() {
+        // Counter fits inside its circle, so stays small; bare stamps fill the button.
+        let (label, scale_frac) = match tool {
+            ToolKind::Counter => ("1", 0.42),
+            ToolKind::Exclaim => ("!", 0.58),
+            ToolKind::Question => ("?", 0.58),
+            ToolKind::Asterisk => ("*", 0.58),
+            _ => continue,
+        };
+        let bx = strip.x + PAD + idx as f32 * (BUTTON_D + GAP);
+        let is_active = active == Some(tool);
+        let fg = if is_active {
+            Rgba([0, 0, 0, 255])
+        } else {
+            Rgba([255, 255, 255, 255])
+        };
+        let scale = PxScale::from(BUTTON_D * scale_frac);
+        let (tw, th) = imageproc::drawing::text_size(scale, font, label);
+        let tx = (bx + BUTTON_D * 0.5 - tw as f32 * 0.5) as i32;
+        // Nudge up 2px — DejaVuSans-Bold's text_size box leaves extra descent
+        // space, so geometric centering ends up looking slightly low.
+        let ty = (by + BUTTON_D * 0.5 - th as f32 * 0.5) as i32 - 2;
+        imageproc::drawing::draw_text_mut(display, fg, tx, ty, scale, font, label);
+    }
 }
 
 fn draw_button<F>(
@@ -274,10 +277,12 @@ fn paint_tool_glyph(
             }
         }
         ToolKind::Counter => {
-            // Circle outline only — the "1" digit is drawn by paint_counter_label
+            // Circle outline only — the "1" digit is drawn by paint_text_labels
             // in the separate text pass.
             stroke_circle(pm, cx, cy, d * 0.28, fg, stroke_w);
         }
+        // Bare-glyph stamps: vector pass draws nothing; the text pass draws the char.
+        ToolKind::Exclaim | ToolKind::Question | ToolKind::Asterisk => {}
     }
 }
 

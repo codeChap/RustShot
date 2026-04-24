@@ -35,7 +35,8 @@ pub fn rasterize_overlays(img: &mut RgbaImage, annotations: &[Annotation]) {
         };
         for a in annotations {
             match a {
-                Annotation::Pixelate { .. } => {}
+                // Pixelate is baked into `base` upstream; Stamp is text-only.
+                Annotation::Pixelate { .. } | Annotation::Stamp { .. } => {}
                 Annotation::Pencil { points, color, width } => {
                     draw_polyline(&mut pixmap, points, *color, *width);
                 }
@@ -60,8 +61,14 @@ pub fn rasterize_overlays(img: &mut RgbaImage, annotations: &[Annotation]) {
 
     let font = font();
     for a in annotations {
-        if let Annotation::Counter { center, number, color, radius } = a {
-            draw_counter_text(img, *center, *number, *color, *radius, font);
+        match a {
+            Annotation::Counter { center, number, color, radius } => {
+                draw_counter_text(img, *center, *number, *color, *radius, font);
+            }
+            Annotation::Stamp { center, ch, color, size } => {
+                draw_stamp_text(img, *center, *ch, *color, *size, font);
+            }
+            _ => {}
         }
     }
 }
@@ -238,6 +245,22 @@ fn draw_counter_text(
 ) {
     let scale = ab_glyph::PxScale::from(radius * 1.2);
     let text = number.to_string();
+    let (tw, th) = imageproc::drawing::text_size(scale, font, &text);
+    let tx = center.x as i32 - tw as i32 / 2;
+    let ty = center.y as i32 - th as i32 / 2;
+    imageproc::drawing::draw_text_mut(img, color, tx, ty, scale, font, &text);
+}
+
+fn draw_stamp_text(
+    img: &mut RgbaImage,
+    center: Pos,
+    ch: char,
+    color: Rgba<u8>,
+    size: f32,
+    font: &impl Font,
+) {
+    let scale = ab_glyph::PxScale::from(size);
+    let text = ch.to_string();
     let (tw, th) = imageproc::drawing::text_size(scale, font, &text);
     let tx = center.x as i32 - tw as i32 / 2;
     let ty = center.y as i32 - th as i32 / 2;

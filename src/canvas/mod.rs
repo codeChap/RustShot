@@ -14,10 +14,13 @@ pub enum ToolKind {
     Ellipse,
     Pixelate,
     Counter,
+    Exclaim,
+    Question,
+    Asterisk,
 }
 
 impl ToolKind {
-    pub const ALL: [ToolKind; 8] = [
+    pub const ALL: [ToolKind; 11] = [
         ToolKind::Pencil,
         ToolKind::Highlighter,
         ToolKind::Line,
@@ -26,7 +29,21 @@ impl ToolKind {
         ToolKind::Ellipse,
         ToolKind::Pixelate,
         ToolKind::Counter,
+        ToolKind::Exclaim,
+        ToolKind::Question,
+        ToolKind::Asterisk,
     ];
+
+    /// Single-char stamp dropped by this tool, if any. `None` means the tool
+    /// is not a stamp (drag-based, or Counter which handles its own glyph).
+    pub fn stamp_char(self) -> Option<char> {
+        match self {
+            ToolKind::Exclaim => Some('!'),
+            ToolKind::Question => Some('?'),
+            ToolKind::Asterisk => Some('*'),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -82,6 +99,13 @@ pub enum Annotation {
         number: u32,
         color: Rgba<u8>,
         radius: f32,
+    },
+    /// Bare single-char stamp (e.g. !, ?, *). No bubble, no auto-increment.
+    Stamp {
+        center: Pos,
+        ch: char,
+        color: Rgba<u8>,
+        size: f32,
     },
 }
 

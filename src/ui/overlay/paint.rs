@@ -118,13 +118,43 @@ fn paint_handles(display: &mut RgbaImage, sel: Bounds) {
 fn paint_hint_text(display: &mut RgbaImage) {
     let w = display.width() as f32;
     let h = display.height() as f32;
-    let msg = "drag to select a region  -  Enter saves full screen  -  Esc cancels";
-    let scale = PxScale::from(18.0);
-    let (tw, th) = imageproc::drawing::text_size(scale, render::font(), msg);
+    let font = render::font();
+    let title_scale = PxScale::from(34.0);
+    let body_scale = PxScale::from(18.0);
+    let title_h = 52.0_f32;
+    let line_h = 26.0_f32;
+
+    let body: &[&str] = &[
+        "Drag to select a region",
+        "Enter saves the full screen    Esc cancels",
+        "",
+        "After selecting a region:",
+        "1 Pencil    2 Highlighter    3 Line    4 Arrow",
+        "5 Rect    6 Ellipse    7 Pixelate    8 Counter",
+        "Drag inside to move the frame    Drag a handle to resize",
+        "Ctrl+Z undo    Ctrl+Y redo    Ctrl+C copy    Enter save",
+    ];
+
+    let block_h = title_h + line_h * body.len() as f32;
+    let top = (h * 0.5 - block_h * 0.5) as i32;
+
+    let title = "RUST SHOT";
+    let title_color = Rgba([255u8, 255, 255, 255]);
+    let body_color = Rgba([210u8, 210, 210, 255]);
+    let (tw, _) = imageproc::drawing::text_size(title_scale, font, title);
     let tx = (w * 0.5 - tw as f32 * 0.5) as i32;
-    let ty = (h * 0.5 - th as f32 * 0.5) as i32;
-    let color = Rgba([220u8, 220, 220, 255]);
-    imageproc::drawing::draw_text_mut(display, color, tx, ty, scale, render::font(), msg);
+    imageproc::drawing::draw_text_mut(display, title_color, tx, top, title_scale, font, title);
+
+    let body_top = top + title_h as i32;
+    for (i, line) in body.iter().enumerate() {
+        if line.is_empty() {
+            continue;
+        }
+        let (tw, _) = imageproc::drawing::text_size(body_scale, font, line);
+        let tx = (w * 0.5 - tw as f32 * 0.5) as i32;
+        let ty = body_top + (i as f32 * line_h) as i32;
+        imageproc::drawing::draw_text_mut(display, body_color, tx, ty, body_scale, font, line);
+    }
 }
 
 // --- tiny-skia helpers -------------------------------------------------------

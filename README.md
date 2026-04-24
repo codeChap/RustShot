@@ -24,7 +24,7 @@ Fast Rust screenshot tool for Linux + X11 (i3-friendly). A from-scratch port of 
 ## Features
 
 - Drag-rect region selection with dimmed exterior
-- Annotation tools: Pencil, Highlighter, Line, Arrow, Rect, Ellipse, Pixelate, Auto-counter (numbered marker)
+- Annotation tools: Pencil, Highlighter, Line, Arrow, Rect, Ellipse, Pixelate, Auto-counter (numbered marker), and bare-glyph stamps (`!`, `?`, `*`)
 - Undo / redo
 - Save to disk, copy to clipboard, or both
 - DBus-driven daemon → instant overlay on hotkey
