@@ -28,7 +28,7 @@ pub(super) const KS_C_LOWER: u32 = 0x0063;
 pub(super) const KS_Z_LOWER: u32 = 0x007a;
 pub(super) const KS_Y_LOWER: u32 = 0x0079;
 pub(super) const KS_1: u32 = 0x0031;
-pub(super) const KS_6: u32 = 0x0036;
+pub(super) const KS_8: u32 = 0x0038;
 
 pub(super) struct X11Win {
     pub conn: RustConnection,

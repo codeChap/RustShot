@@ -26,7 +26,7 @@ use x11rb::connection::Connection;
 use x11rb::protocol::xproto::KeyButMask;
 use x11rb::protocol::Event;
 use x11_win::{
-    X11Win, KS_1, KS_6, KS_C_LOWER, KS_ESCAPE, KS_KP_ENTER, KS_RETURN, KS_Y_LOWER, KS_Z_LOWER,
+    X11Win, KS_1, KS_8, KS_C_LOWER, KS_ESCAPE, KS_KP_ENTER, KS_RETURN, KS_Y_LOWER, KS_Z_LOWER,
     XC_CROSSHAIR, XC_FLEUR, XC_HAND1, XC_LEFT_PTR,
 };
 
@@ -90,7 +90,7 @@ pub fn show(
                 }
             }
             state.refresh_base();
-            state.refresh_draft_blur();
+            state.refresh_draft_pixelate();
             paint::composite(&mut display, &state);
             if let Err(e) = win.blit_rgba(display.as_raw()) {
                 tracing::error!("blit failed: {e}");
@@ -243,7 +243,7 @@ fn on_press(state: &mut OverlayState, p: Pos) -> Dragging {
             // Start an annotation draft.
             if let Some(tool) = state.canvas.tool {
                 if bounds_contains(sel, p) {
-                    state.draft = Draft::new(tool, p, state.canvas.style, state.blur_sigma);
+                    state.draft = Draft::new(tool, p, state.canvas.style, state.pixelate_block);
                     return Dragging::Draft;
                 }
             }
@@ -390,7 +390,7 @@ fn handle_key(
         return None;
     }
 
-    if (KS_1..=KS_6).contains(&ks) {
+    if (KS_1..=KS_8).contains(&ks) {
         let idx = (ks - KS_1) as usize;
         if let Some(&t) = ToolKind::ALL.get(idx) {
             state.canvas.tool = Some(t);

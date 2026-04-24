@@ -12,7 +12,7 @@ pub struct Config {
 #[serde(default)]
 pub struct Defaults {
     pub counter_radius: f32,
-    pub blur_sigma: f32,
+    pub pixelate_block: u32,
     pub save_dir: String,
     pub filename_pattern: String,
 }
@@ -21,7 +21,7 @@ impl Default for Defaults {
     fn default() -> Self {
         Self {
             counter_radius: 16.0,
-            blur_sigma: 12.0,
+            pixelate_block: 10,
             save_dir: "~/Pictures/screenshots".into(),
             filename_pattern: "%Y%m%d-%H%M%S.png".into(),
         }

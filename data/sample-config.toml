@@ -6,7 +6,7 @@
 
 [defaults]
 counter_radius = 16.0                    # auto-counter bubble radius
-blur_sigma = 12.0                        # blur strength
+pixelate_block = 10                      # pixelate block size in px (min 2)
 save_dir = "~/Pictures/screenshots"      # used when no -p flag is given
 filename_pattern = "%Y%m%d-%H%M%S.png"   # strftime format for auto-generated filenames
 

@@ -7,20 +7,24 @@ use image::Rgba;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ToolKind {
     Pencil,
+    Highlighter,
+    Line,
     Arrow,
     Rect,
     Ellipse,
-    Blur,
+    Pixelate,
     Counter,
 }
 
 impl ToolKind {
-    pub const ALL: [ToolKind; 6] = [
+    pub const ALL: [ToolKind; 8] = [
         ToolKind::Pencil,
+        ToolKind::Highlighter,
+        ToolKind::Line,
         ToolKind::Arrow,
         ToolKind::Rect,
         ToolKind::Ellipse,
-        ToolKind::Blur,
+        ToolKind::Pixelate,
         ToolKind::Counter,
     ];
 }
@@ -47,6 +51,12 @@ pub enum Annotation {
         color: Rgba<u8>,
         width: f32,
     },
+    Line {
+        start: Pos,
+        end: Pos,
+        color: Rgba<u8>,
+        width: f32,
+    },
     Arrow {
         start: Pos,
         end: Pos,
@@ -63,9 +73,9 @@ pub enum Annotation {
         color: Rgba<u8>,
         width: f32,
     },
-    Blur {
+    Pixelate {
         rect: Bounds,
-        sigma: f32,
+        block: u32,
     },
     Counter {
         center: Pos,

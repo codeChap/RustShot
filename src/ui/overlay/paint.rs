@@ -1,4 +1,4 @@
-//! Composite pipeline: start from `base` (captured image + committed blurs),
+//! Composite pipeline: start from `base` (captured image + committed pixelates),
 //! apply live annotations + UI chrome (dim, selection frame, handles, strip),
 //! blit to the X11 window.
 //!
@@ -25,13 +25,13 @@ pub(super) fn composite(display: &mut RgbaImage, state: &OverlayState) {
         overlay_rect_from_base(display, &state.base, sel);
     }
 
-    // 3. Rasterize committed non-blur annotations.
-    // (Committed blur is already baked into `base` and `dim_base`.)
+    // 3. Rasterize committed non-pixelate annotations.
+    // (Committed pixelate is already baked into `base` and `dim_base`.)
     let anns: Vec<Annotation> = state
         .canvas
         .annotations
         .iter()
-        .filter(|a| !matches!(a, Annotation::Blur { .. }))
+        .filter(|a| !matches!(a, Annotation::Pixelate { .. }))
         .cloned()
         .collect();
     render::rasterize_overlays(display, &anns);
@@ -54,8 +54,8 @@ pub(super) fn composite(display: &mut RgbaImage, state: &OverlayState) {
 
 fn paint_draft(display: &mut RgbaImage, draft: &Draft, state: &OverlayState) {
     match draft {
-        Draft::Blur { .. } => {
-            if let Some((x, y, ref img)) = state.draft_blur_cache {
+        Draft::Pixelate { .. } => {
+            if let Some((x, y, ref img)) = state.draft_pixelate_cache {
                 image::imageops::replace(display, img, x as i64, y as i64);
             }
         }

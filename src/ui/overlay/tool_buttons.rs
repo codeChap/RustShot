@@ -208,6 +208,22 @@ fn paint_tool_glyph(
             stroke_line(pm, ax, ay, bx, by, fg, stroke_w);
             fill_circle(pm, bx, by, 2.0, fg);
         }
+        ToolKind::Highlighter => {
+            // Fat semi-transparent diagonal swipe — evokes a marker.
+            let c = Color::from_rgba8(255, 230, 0, 180);
+            let ax = cx - d * 0.26;
+            let ay = cy + d * 0.24;
+            let bx = cx + d * 0.24;
+            let by = cy - d * 0.22;
+            stroke_line(pm, ax, ay, bx, by, c, d * 0.22);
+        }
+        ToolKind::Line => {
+            let ax = cx - d * 0.26;
+            let ay = cy + d * 0.22;
+            let bx = cx + d * 0.26;
+            let by = cy - d * 0.22;
+            stroke_line(pm, ax, ay, bx, by, fg, stroke_w);
+        }
         ToolKind::Arrow => {
             let ax = cx - d * 0.26;
             let ay = cy + d * 0.22;
@@ -242,10 +258,20 @@ fn paint_tool_glyph(
         ToolKind::Ellipse => {
             stroke_ellipse(pm, cx, cy, d * 0.28, d * 0.20, fg, stroke_w);
         }
-        ToolKind::Blur => {
-            stroke_circle(pm, cx, cy, d * 0.10, fg, stroke_w);
-            stroke_circle(pm, cx, cy, d * 0.20, fg, stroke_w);
-            stroke_circle(pm, cx, cy, d * 0.30, fg, stroke_w);
+        ToolKind::Pixelate => {
+            // 3x3 grid of filled squares with gaps — the "mosaic" motif.
+            let cell = d * 0.14;
+            let gap = d * 0.04;
+            let step = cell + gap;
+            let ox = cx - step;
+            let oy = cy - step;
+            for row in 0..3 {
+                for col in 0..3 {
+                    let rx = ox + col as f32 * step - cell * 0.5;
+                    let ry = oy + row as f32 * step - cell * 0.5;
+                    fill_rect_xywh(pm, rx, ry, cell, cell, fg);
+                }
+            }
         }
         ToolKind::Counter => {
             // Circle outline only — the "1" digit is drawn by paint_counter_label
@@ -253,6 +279,10 @@ fn paint_tool_glyph(
             stroke_circle(pm, cx, cy, d * 0.28, fg, stroke_w);
         }
     }
+}
+
+fn fill_rect_xywh(pm: &mut PixmapMut, x: f32, y: f32, w: f32, h: f32, c: Color) {
+    fill_rect(pm, Bounds { x, y, w, h }, c);
 }
 
 fn paint_glyph_save(pm: &mut PixmapMut, cx: f32, cy: f32, d: f32, fg: Color, _bg: Color) {

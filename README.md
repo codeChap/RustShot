@@ -24,7 +24,7 @@ Fast Rust screenshot tool for Linux + X11 (i3-friendly). A from-scratch port of 
 ## Features
 
 - Drag-rect region selection with dimmed exterior
-- Annotation tools: Pencil, Arrow, Rect, Ellipse, Blur, Auto-counter (numbered marker)
+- Annotation tools: Pencil, Highlighter, Line, Arrow, Rect, Ellipse, Pixelate, Auto-counter (numbered marker)
 - Undo / redo
 - Save to disk, copy to clipboard, or both
 - DBus-driven daemon → instant overlay on hotkey
@@ -81,7 +81,7 @@ rustshot screen -n 1         # specific monitor by index
 | Drag           | Select region (then enter Annotate)    |
 | Drag inside    | Move the frame (when no tool is armed; also `Ctrl+drag` any time) |
 | Drag a handle  | Resize the frame                       |
-| `1`–`6`        | Pencil, Arrow, Rect, Ellipse, Blur, Counter |
+| `1`–`8`        | Pencil, Highlighter, Line, Arrow, Rect, Ellipse, Pixelate, Counter |
 | `Ctrl+Z`/`Y`   | Undo / Redo                            |
 | `Enter`        | Save                                   |
 | `Ctrl+C`       | Copy to clipboard                      |
@@ -168,7 +168,7 @@ Annotation color and stroke width are deliberately not configurable — the over
 ```toml
 [defaults]
 counter_radius = 16.0                   # auto-counter bubble radius
-blur_sigma = 12.0                       # blur strength
+pixelate_block = 10                     # pixelate block size in px (min 2)
 save_dir = "~/Pictures/screenshots"     # used when no -p flag is given
 filename_pattern = "%Y%m%d-%H%M%S.png"  # strftime format (chrono::format)
 
@@ -223,7 +223,7 @@ src/
 │       ├── mod.rs              # X11 event loop + input dispatch
 │       ├── x11_win.rs          # window, grabs, keymap, cursors, MIT-SHM blit
 │       ├── paint.rs            # composite pipeline (dim, selection, handles)
-│       ├── state.rs            # OverlayState + blur cache + save/copy
+│       ├── state.rs            # OverlayState + pixelate cache + save/copy
 │       ├── tool_buttons.rs     # floating Save/Copy + tool selector strip
 │       ├── selection.rs        # handles + hit-testing + resize math
 │       └── draft.rs            # in-progress Annotation (Draft enum)

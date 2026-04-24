@@ -15,8 +15,8 @@ pub(crate) fn font() -> &'static FontRef<'static> {
 }
 
 /// Pass 2 + 3: vector primitives via tiny-skia, then counter text via imageproc.
-/// Blur annotations are skipped — caller is responsible for having baked them
-/// in already (or wanting them omitted, e.g. when `img` is the cached
+/// Pixelate annotations are skipped — caller is responsible for having baked
+/// them in already (or wanting them omitted, e.g. when `img` is the cached
 /// committed_base).
 pub fn rasterize_overlays(img: &mut RgbaImage, annotations: &[Annotation]) {
     if annotations.is_empty() {
@@ -35,9 +35,12 @@ pub fn rasterize_overlays(img: &mut RgbaImage, annotations: &[Annotation]) {
         };
         for a in annotations {
             match a {
-                Annotation::Blur { .. } => {}
+                Annotation::Pixelate { .. } => {}
                 Annotation::Pencil { points, color, width } => {
                     draw_polyline(&mut pixmap, points, *color, *width);
+                }
+                Annotation::Line { start, end, color, width } => {
+                    draw_line(&mut pixmap, *start, *end, *color, *width);
                 }
                 Annotation::Arrow { start, end, color, width } => {
                     draw_arrow(&mut pixmap, *start, *end, *color, *width);
@@ -87,6 +90,21 @@ fn draw_polyline(pixmap: &mut PixmapMut, points: &[Pos], color: Rgba<u8>, width:
     for p in &points[1..] {
         pb.line_to(p.x, p.y);
     }
+    if let Some(path) = pb.finish() {
+        pixmap.stroke_path(
+            &path,
+            &paint_for(color),
+            &stroke_for(width),
+            Transform::identity(),
+            None,
+        );
+    }
+}
+
+fn draw_line(pixmap: &mut PixmapMut, start: Pos, end: Pos, color: Rgba<u8>, width: f32) {
+    let mut pb = PathBuilder::new();
+    pb.move_to(start.x, start.y);
+    pb.line_to(end.x, end.y);
     if let Some(path) = pb.finish() {
         pixmap.stroke_path(
             &path,
@@ -226,10 +244,10 @@ fn draw_counter_text(
     imageproc::drawing::draw_text_mut(img, color, tx, ty, scale, font, &text);
 }
 
-/// Crop + blur a region. Returns the clamped origin and the small blurred
-/// image so callers can either paste it back (full rasterization) or upload
-/// it as a live preview texture (overlay).
-pub fn blur_crop(img: &RgbaImage, b: Bounds, sigma: f32) -> Option<(u32, u32, RgbaImage)> {
+/// Crop + pixelate a region via downscale→upscale (nearest). Returns the clamped
+/// origin and the pixelated image so callers can paste it back into the base
+/// (committed) or use it as a live preview (draft).
+pub fn pixelate_crop(img: &RgbaImage, b: Bounds, block: u32) -> Option<(u32, u32, RgbaImage)> {
     let img_w = img.width();
     let img_h = img.height();
     let x = b.x.max(0.0) as u32;
@@ -239,7 +257,13 @@ pub fn blur_crop(img: &RgbaImage, b: Bounds, sigma: f32) -> Option<(u32, u32, Rg
     if w == 0 || h == 0 {
         return None;
     }
+    let block = block.max(2);
+    let sw = (w / block).max(1);
+    let sh = (h / block).max(1);
     let cropped = image::imageops::crop_imm(img, x, y, w, h).to_image();
-    Some((x, y, imageproc::filter::gaussian_blur_f32(&cropped, sigma.max(0.5))))
+    // Triangle downscale = area-averaged blocks; Nearest upscale keeps hard edges.
+    let down = image::imageops::resize(&cropped, sw, sh, image::imageops::FilterType::Triangle);
+    let up = image::imageops::resize(&down, w, h, image::imageops::FilterType::Nearest);
+    Some((x, y, up))
 }
 
