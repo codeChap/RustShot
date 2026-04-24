@@ -5,18 +5,18 @@ Fast Rust screenshot tool for Linux + X11 (i3-friendly). A from-scratch port of 
 ## Status
 
 - **Linux + X11 only.** Developed and tested on i3wm. No Wayland, no Windows, no macOS.
-- ~11 MB stripped release binary. Runtime deps: X11, and `xclip` (for the clipboard — `apt install xclip`).
+- ~6 MB stripped release binary. Runtime deps: X11, and `xclip` (for the clipboard — `apt install xclip`).
 
 ## Features
 
 - Drag-rect region selection with dimmed exterior
 - Annotation tools: Pencil, Arrow, Rect, Ellipse, Blur, Auto-counter (numbered marker)
-- Per-tool color (configurable palette) + stroke width
 - Undo / redo
 - Save to disk, copy to clipboard, or both
 - DBus-driven daemon → instant overlay on hotkey
+- MIT-SHM fast-path blit (falls back to socket `PutImage` if unavailable)
 - Optional X11 cursor compositing via XFixes
-- TOML config: defaults, palette, save dir, filename pattern
+- TOML config: defaults, save dir, filename pattern
 
 ## Install
 
@@ -76,16 +76,15 @@ The Auto-Counter tool single-clicks numbered bubbles that auto-increment per ove
 Add to `~/.config/i3/config`:
 
 ```text
-# RustShot overlay must float and lose i3 borders to fill the screen cleanly
-for_window [class="rustshot"] floating enable, border none
-
-# Autostart the daemon (or use systemd, see below)
+# Autostart the daemon (or use systemd, see below).
+# The overlay is an override-redirect X11 window, so i3 doesn't need
+# (or get) any for_window rules for it.
 exec --no-startup-id rustshot
 
 # PrintScreen → drag region → save (auto-path) + clipboard
 # dbus-send (~40KB, always cache-hot) talks to the daemon directly.
-# Bypasses the 13MB rustshot binary that `rustshot gui -c` would otherwise
-# spawn-and-exit on every keypress. Same work, same code path as a tray click.
+# Bypasses a cold rustshot binary spawn that `rustshot gui -c` would
+# otherwise do on every keypress. Same work, same code path as a tray click.
 bindsym Print exec --no-startup-id dbus-send --session \
     --dest=org.rustshot.RustShot --type=method_call / \
     org.rustshot.RustShot.graphicCaptureFlags \
@@ -196,21 +195,27 @@ src/
 ├── ui/
 │   ├── mod.rs                  # UiRequest / UiResult channel types
 │   └── overlay/
-│       ├── mod.rs              # OverlayApp + eframe update loop + input dispatch
+│       ├── mod.rs              # X11 event loop + input dispatch
+│       ├── x11_win.rs          # window, grabs, keymap, cursors, MIT-SHM blit
+│       ├── paint.rs            # composite pipeline (dim, selection, handles)
+│       ├── state.rs            # OverlayState + blur cache + save/copy
 │       ├── tool_buttons.rs     # floating Save/Copy + tool selector strip
 │       ├── selection.rs        # handles + hit-testing + resize math
-│       ├── draft.rs            # in-progress Annotation (Draft enum)
-│       ├── preview.rs          # egui-painter preview rendering
-│       └── convert.rs          # tiny egui ↔ canvas type conversions
+│       └── draft.rs            # in-progress Annotation (Draft enum)
 └── export/
     ├── mod.rs
     ├── file.rs                 # PNG save (creates parent dirs)
     └── clipboard.rs            # shells out to xclip for persistent ownership
 ```
 
-The X11/winit thread constraint (winit owns the main thread on Linux X11) drives the daemon's structure: the main thread runs `eframe::run_native` per overlay invocation, while the DBus listener runs on a background tokio thread and forwards capture requests over a `crossbeam_channel`.
+The overlay is a fullscreen override-redirect x11rb window that grabs
+keyboard + pointer, composites into an `RgbaImage` via tiny-skia, and
+blits with MIT-SHM (`shm_put_image`) — or socket `PutImage` as fallback.
+The main thread runs the blocking X event loop while the DBus listener
+sits on a background tokio thread and hands capture requests over a
+`crossbeam_channel`.
 
-The `Annotation` enum + `canvas::render` match is the central DRY point — adding a new tool is one new variant + one new arm. Tool dispatch in `ui/overlay.rs` is just a state machine over the `Draft` enum.
+The `Annotation` enum + `canvas::render` match is the central DRY point — adding a new tool is one new variant + one new arm. Tool dispatch in `ui/overlay/mod.rs` is just a state machine over the `Draft` enum.
 
 ## Build from source
 
