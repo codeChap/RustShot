@@ -42,6 +42,8 @@ Registers on the session DBus as `org.rustshot.RustShot` and waits for capture r
 
 ### Trigger captures
 
+These CLI forms are for scripts and one-shots. For PrintScreen-style hotkeys, bind `dbus-send` against the running daemon — see [i3 setup](#i3-setup) below.
+
 ```bash
 rustshot gui                 # interactive region select; auto-save to default path
 rustshot gui -c              # auto-save + copy to clipboard
@@ -85,6 +87,9 @@ exec --no-startup-id rustshot
 # dbus-send (~40KB, always cache-hot) talks to the daemon directly.
 # Bypasses a cold rustshot binary spawn that `rustshot gui -c` would
 # otherwise do on every keypress. Same work, same code path as a tray click.
+#
+# Arg order for *Flags methods: path, delay_ms, clipboard, no_save, id.
+# captureScreenFlags prepends int32 screen_index (-1 = cursor's screen).
 bindsym Print exec --no-startup-id dbus-send --session \
     --dest=org.rustshot.RustShot --type=method_call / \
     org.rustshot.RustShot.graphicCaptureFlags \
@@ -101,7 +106,7 @@ bindsym $mod+Shift+Print exec --no-startup-id dbus-send --session \
     string:"" uint32:0 boolean:true boolean:false string:""
 ```
 
-Reload with `i3-msg reload`. The `boolean:true` is the clipboard flag (matches `-c`); flip to `boolean:false` to skip clipboard.
+Reload with `i3-msg reload`. The first `boolean` is the clipboard flag (matches `-c`); the second is `no_save`. Flip either to change behavior.
 
 The `rustshot gui` / `rustshot full` / `rustshot screen` CLI subcommands stay useful for one-shot scripting (`rustshot gui --delay 3 -p /tmp/foo.png`) where flag-parsing is convenient. For hot keybinds you skip the binary spawn entirely.
 
@@ -158,6 +163,10 @@ include_cursor = false                  # composite the X11 cursor (XFixes) into
 The daemon reads the config at startup. To apply changes:
 
 ```bash
+# systemd-managed:
+systemctl --user restart rustshot
+
+# otherwise:
 pkill -x rustshot && rustshot &
 ```
 
@@ -183,7 +192,7 @@ src/
 ├── client.rs                   # CLI → DBus proxy
 ├── daemon.rs                   # main thread runs UI loop; DBus listener on bg thread
 ├── dbus/mod.rs                 # zbus interface impl
-├── config.rs                   # TOML config + defaults + path/color/tool helpers
+├── config.rs                   # TOML config + defaults + auto-save path helper
 ├── error.rs                    # thiserror types
 ├── capture/
 │   ├── mod.rs                  # Screen type
