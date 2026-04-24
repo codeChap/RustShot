@@ -23,17 +23,6 @@ impl ToolKind {
         ToolKind::Blur,
         ToolKind::Counter,
     ];
-
-    pub fn label(self) -> &'static str {
-        match self {
-            ToolKind::Pencil => "Pencil",
-            ToolKind::Arrow => "Arrow",
-            ToolKind::Rect => "Rect",
-            ToolKind::Ellipse => "Ellipse",
-            ToolKind::Blur => "Blur",
-            ToolKind::Counter => "Counter",
-        }
-    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -91,7 +80,9 @@ pub struct Canvas {
     pub annotations: Vec<Annotation>,
     pub redo: Vec<Annotation>,
     pub style: Style,
-    pub tool: ToolKind,
+    /// `None` means no drawing tool is armed — inside-drag of the selection
+    /// rectangle moves it instead of starting an annotation.
+    pub tool: Option<ToolKind>,
     counter: u32,
 }
 
@@ -101,7 +92,7 @@ impl Default for Canvas {
             annotations: Vec::new(),
             redo: Vec::new(),
             style: Style::default(),
-            tool: ToolKind::Rect,
+            tool: None,
             counter: 0,
         }
     }

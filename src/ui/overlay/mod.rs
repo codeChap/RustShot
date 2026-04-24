@@ -222,15 +222,15 @@ fn on_press(state: &mut OverlayState, p: Pos) -> Dragging {
                 state.edit_rect_start = Some(sel);
                 return Dragging::EditResize;
             }
-            // Ctrl+inside = move
-            if state.ctrl_down && bounds_contains(sel, p) {
+            // No tool armed, or Ctrl held: inside-drag moves the frame.
+            if bounds_contains(sel, p) && (state.canvas.tool.is_none() || state.ctrl_down) {
                 state.selection_edit = SelectionEdit::Moving;
                 state.edit_drag_start = Some(p);
                 state.edit_rect_start = Some(sel);
                 return Dragging::EditMove;
             }
             // Counter: click-to-place, no drag.
-            if state.canvas.tool == ToolKind::Counter && bounds_contains(sel, p) {
+            if state.canvas.tool == Some(ToolKind::Counter) && bounds_contains(sel, p) {
                 let n = state.canvas.next_counter();
                 state.canvas.push(Annotation::Counter {
                     center: p,
@@ -241,12 +241,13 @@ fn on_press(state: &mut OverlayState, p: Pos) -> Dragging {
                 return Dragging::None;
             }
             // Start an annotation draft.
-            if bounds_contains(sel, p) {
-                state.draft = Draft::new(state.canvas.tool, p, state.canvas.style, state.blur_sigma);
-                Dragging::Draft
-            } else {
-                Dragging::None
+            if let Some(tool) = state.canvas.tool {
+                if bounds_contains(sel, p) {
+                    state.draft = Draft::new(tool, p, state.canvas.style, state.blur_sigma);
+                    return Dragging::Draft;
+                }
             }
+            Dragging::None
         }
     }
 }
@@ -355,7 +356,8 @@ fn on_release(
 fn apply_hit(state: &mut OverlayState, hit: Hit) -> Option<UiResult> {
     match hit {
         Hit::Tool(t) => {
-            state.canvas.tool = t;
+            // Click the active tool to disarm (back to move-the-frame mode).
+            state.canvas.tool = if state.canvas.tool == Some(t) { None } else { Some(t) };
             None
         }
         Hit::Save => Some(state.act(false)),
@@ -391,7 +393,7 @@ fn handle_key(
     if (KS_1..=KS_6).contains(&ks) {
         let idx = (ks - KS_1) as usize;
         if let Some(&t) = ToolKind::ALL.get(idx) {
-            state.canvas.tool = t;
+            state.canvas.tool = Some(t);
         }
     }
     None

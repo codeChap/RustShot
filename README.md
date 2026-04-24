@@ -79,13 +79,15 @@ rustshot screen -n 1         # specific monitor by index
 | Key            | Action                                 |
 | -------------- | -------------------------------------- |
 | Drag           | Select region (then enter Annotate)    |
+| Drag inside    | Move the frame (when no tool is armed; also `Ctrl+drag` any time) |
+| Drag a handle  | Resize the frame                       |
 | `1`–`6`        | Pencil, Arrow, Rect, Ellipse, Blur, Counter |
 | `Ctrl+Z`/`Y`   | Undo / Redo                            |
 | `Enter`        | Save                                   |
 | `Ctrl+C`       | Copy to clipboard                      |
 | `Esc`          | Cancel                                 |
 
-The Auto-Counter tool single-clicks numbered bubbles that auto-increment per overlay session.
+The Auto-Counter tool single-clicks numbered bubbles that auto-increment per overlay session. Click the active tool button again (or create a new selection) to disarm it and return to frame-drag mode.
 
 ## i3 setup
 

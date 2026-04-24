@@ -78,7 +78,7 @@ fn in_square(x: f32, y: f32, d: f32, p: Pos) -> bool {
 pub(super) fn paint(
     display: &mut RgbaImage,
     strip: Bounds,
-    active: ToolKind,
+    active: Option<ToolKind>,
     hover: Option<Hit>,
 ) {
     let w = display.width();
@@ -100,7 +100,7 @@ pub(super) fn paint(
         let y = strip.y + PAD;
 
         for &tool in ToolKind::ALL.iter() {
-            let is_active = tool == active;
+            let is_active = active == Some(tool);
             let is_hover = matches!(hover, Some(Hit::Tool(h)) if h == tool);
             draw_button(&mut pm, x, y, BUTTON_D, is_active, is_hover, |pm, cx, cy, d, fg, bg| {
                 paint_tool_glyph(pm, cx, cy, d, tool, fg, bg);
@@ -139,7 +139,7 @@ pub(super) fn paint(
 fn paint_counter_label(
     display: &mut RgbaImage,
     strip: Bounds,
-    active: ToolKind,
+    active: Option<ToolKind>,
     hover: Option<Hit>,
 ) {
     // Find the Counter button x position.
@@ -149,7 +149,7 @@ fn paint_counter_label(
         .unwrap_or(0) as f32;
     let bx = strip.x + PAD + counter_idx * (BUTTON_D + GAP);
     let by = strip.y + PAD;
-    let is_active = active == ToolKind::Counter;
+    let is_active = active == Some(ToolKind::Counter);
     let fg = if is_active {
         Rgba([0, 0, 0, 255])
     } else {

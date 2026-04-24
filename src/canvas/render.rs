@@ -14,15 +14,6 @@ pub(crate) fn font() -> &'static FontRef<'static> {
     })
 }
 
-/// Pass 1: bake every Blur annotation into `img` via crop+gaussian+replace.
-pub fn apply_blurs(img: &mut RgbaImage, annotations: &[Annotation]) {
-    for a in annotations {
-        if let Annotation::Blur { rect, sigma } = a {
-            blur_region(img, *rect, *sigma);
-        }
-    }
-}
-
 /// Pass 2 + 3: vector primitives via tiny-skia, then counter text via imageproc.
 /// Blur annotations are skipped — caller is responsible for having baked them
 /// in already (or wanting them omitted, e.g. when `img` is the cached
@@ -252,8 +243,3 @@ pub fn blur_crop(img: &RgbaImage, b: Bounds, sigma: f32) -> Option<(u32, u32, Rg
     Some((x, y, imageproc::filter::gaussian_blur_f32(&cropped, sigma.max(0.5))))
 }
 
-fn blur_region(img: &mut RgbaImage, b: Bounds, sigma: f32) {
-    if let Some((x, y, blurred)) = blur_crop(img, b, sigma) {
-        image::imageops::replace(img, &blurred, x as i64, y as i64);
-    }
-}
