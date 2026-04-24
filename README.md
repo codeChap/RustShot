@@ -115,7 +115,29 @@ systemctl --user daemon-reload
 systemctl --user enable --now rustshot.service
 ```
 
-The unit's `ExecStart` is `%h/.cargo/bin/rustshot`, matching `cargo install`.
+Check it's running: `systemctl --user status rustshot`.
+
+The unit's `ExecStart` is `%h/.cargo/bin/rustshot`, matching `cargo install` — the binary lives on the root drive, so the service is independent of any external mounts (source tree location irrelevant).
+
+**`WantedBy=default.target` (not `graphical-session.target`).** Under a bare i3/X11 session, nothing activates `graphical-session.target` for the user scope, so a unit bound to it is enabled-but-never-started on login. `default.target` always activates on user login and works under every login setup (i3, GNOME, KDE, tty).
+
+### Troubleshooting
+
+If PrintScreen does nothing and no tray icon appears after reboot:
+
+```bash
+systemctl --user is-active rustshot         # should print "active"
+journalctl --user -u rustshot -n 50         # startup errors
+```
+
+If the unit is enabled but inactive, it was probably installed with the old `WantedBy=graphical-session.target`:
+
+```bash
+systemctl --user disable rustshot
+cp data/systemd/rustshot.service ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now rustshot.service
+```
 
 ## Configuration
 
